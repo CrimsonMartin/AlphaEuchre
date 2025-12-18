@@ -33,8 +33,8 @@ services:
 
   euchre-api:
     build:
-      context: ./services/euchre-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/euchre-api/Dockerfile
     container_name: euchre-api
     environment:
       FLASK_APP: app
@@ -55,8 +55,8 @@ services:
 
   web-ui:
     build:
-      context: ./services/web-ui
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/web-ui/Dockerfile
     container_name: euchre-web-ui
     environment:
       FLASK_APP: app
@@ -76,8 +76,8 @@ services:
 
   cli:
     build:
-      context: ./services/cli
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/cli/Dockerfile
     container_name: euchre-cli
     environment:
       EUCHRE_API_URL: http://euchre-api:5000
@@ -92,8 +92,8 @@ services:
 
   ai-trainer:
     build:
-      context: ./services/ai-trainer
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/ai-trainer/Dockerfile
     container_name: euchre-ai-trainer
     environment:
       DATABASE_URL: postgresql://euchre:euchre_dev_pass@postgres:5432/euchrebot

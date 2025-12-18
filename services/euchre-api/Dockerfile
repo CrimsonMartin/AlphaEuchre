@@ -8,15 +8,18 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy shared euchre_core package
+COPY shared/euchre_core /shared/euchre_core
 
-# Copy application code
-COPY . .
+# Copy requirements and install Python dependencies
+COPY services/euchre-api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Install shared euchre_core package
 RUN pip install -e /shared/euchre_core
+
+# Copy application code
+COPY services/euchre-api/ .
 
 # Expose port
 EXPOSE 5000
