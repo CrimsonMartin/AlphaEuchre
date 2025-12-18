@@ -41,9 +41,6 @@ services:
       FLASK_ENV: development
       DATABASE_URL: postgresql://euchre:euchre_dev_pass@postgres:5432/euchrebot
       REDIS_URL: redis://redis:6379/0
-    volumes:
-      - ./services/euchre-api:/app
-      - ./shared:/shared
     ports:
       - "127.0.0.1:5000:5000"
     depends_on:
@@ -64,9 +61,6 @@ services:
       EUCHRE_API_URL: http://euchre-api:5000
       REDIS_URL: redis://redis:6379/1
       SECRET_KEY: dev-secret-key-change-in-production
-    volumes:
-      - ./services/web-ui:/app
-      - ./shared:/shared
     ports:
       - "127.0.0.1:5001:5001"
     depends_on:
@@ -81,9 +75,6 @@ services:
     container_name: euchre-cli
     environment:
       EUCHRE_API_URL: http://euchre-api:5000
-    volumes:
-      - ./services/cli:/app
-      - ./shared:/shared
     depends_on:
       - euchre-api
     stdin_open: true
@@ -100,8 +91,6 @@ services:
       EUCHRE_API_URL: http://euchre-api:5000
       CUDA_VISIBLE_DEVICES: "0"
     volumes:
-      - ./services/ai-trainer:/app
-      - ./shared:/shared
       - ai_models:/models
     ports:
       - "127.0.0.1:5002:5002"
@@ -121,7 +110,7 @@ services:
     image: dpage/pgadmin4:latest
     container_name: euchre-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@euchrebot.local
+      PGADMIN_DEFAULT_EMAIL: admin@euchrebot.com
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_LISTEN_PORT: 5050
     volumes:
