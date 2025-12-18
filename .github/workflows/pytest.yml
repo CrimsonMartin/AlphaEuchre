@@ -1,0 +1,73 @@
+name: Pytest CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install euchre_core package
+      run: |
+        cd shared/euchre_core
+        pip install -e .
+    
+    - name: Install euchre-api dependencies
+      run: |
+        cd services/euchre-api
+        pip install -r requirements.txt
+        pip install -r requirements-test.txt
+    
+    - name: Run pytest with coverage
+      run: |
+        cd services/euchre-api
+        pytest
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      if: matrix.python-version == '3.11'
+      with:
+        file: ./services/euchre-api/coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: Upload coverage HTML report
+      uses: actions/upload-artifact@v3
+      if: matrix.python-version == '3.11'
+      with:
+        name: coverage-report
+        path: services/euchre-api/htmlcov/
+        retention-days: 30
+    
+    - name: Comment coverage on PR
+      if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
+      uses: py-cov-action/python-coverage-comment-action@v3
+      with:
+        GITHUB_TOKEN: ${{ github.token }}
+        MINIMUM_GREEN: 80
+        MINIMUM_ORANGE: 60

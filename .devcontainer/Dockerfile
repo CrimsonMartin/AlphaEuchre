@@ -29,6 +29,9 @@ RUN pip install --upgrade pip setuptools wheel \
     black \
     pylint \
     pytest \
+    pytest-cov \
+    pytest-mock \
+    fakeredis \
     ipython \
     jupyter
 
