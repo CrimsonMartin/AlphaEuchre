@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - Error</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>⚠️ Error</h1>
+
+        <div class="scoreboard">
+            <h2>Something went wrong</h2>
+            <p style="color: var(--danger-color); font-size: 1.2em; padding: 20px; text-align: center;">
+                {{ error }}
+            </p>
+        </div>
+
+        <div class="menu">
+            <a href="{{ url_for('main.index') }}" class="btn btn-primary">Back to Home</a>
+        </div>
+    </div>
+</body>
+
+</html>

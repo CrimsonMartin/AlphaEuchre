@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - Game History</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>📊 Game History</h1>
+
+        <div class="scoreboard">
+            <h2>Past Games</h2>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <thead>
+                    <tr style="background-color: var(--bg-color);">
+                        <th style="padding: 10px; text-align: left;">Game ID</th>
+                        <th style="padding: 10px; text-align: left;">Date</th>
+                        <th style="padding: 10px; text-align: left;">Winner</th>
+                        <th style="padding: 10px; text-align: left;">Score</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="4" style="padding: 20px; text-align: center; color: #999;">
+                            No games played yet. <a href="{{ url_for('main.new_game') }}"
+                                style="color: var(--secondary-color);">Start a new game!</a>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="menu">
+            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Back to Home</a>
+            <a href="{{ url_for('main.new_game') }}" class="btn btn-primary">New Game</a>
+        </div>
+    </div>
+</body>
+
+</html>

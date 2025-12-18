@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - AI Training</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>🤖 AI Training Dashboard</h1>
+
+        <!-- Training Controls -->
+        <div class="scoreboard">
+            <h2>Start New Training Run</h2>
+            <form method="POST" action="#" style="padding: 20px;">
+                <div style="margin: 15px 0;">
+                    <label for="population_size" style="display: inline-block; width: 200px;">Population Size:</label>
+                    <input type="number" id="population_size" name="population_size" value="20" min="5" max="100"
+                        style="padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 150px;">
+                </div>
+                <div style="margin: 15px 0;">
+                    <label for="generations" style="display: inline-block; width: 200px;">Generations:</label>
+                    <input type="number" id="generations" name="generations" value="10" min="1" max="100"
+                        style="padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 150px;">
+                </div>
+                <div style="margin: 20px 0;">
+                    <button type="submit" class="btn btn-primary" style="border: none; cursor: pointer;">
+                        Start Training
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Training Status -->
+        <div class="scoreboard">
+            <h2>Current Training Status</h2>
+            <div style="padding: 20px; text-align: center;">
+                <p style="color: #999;">No training in progress</p>
+            </div>
+        </div>
+
+        <!-- Trained Models -->
+        <div class="scoreboard">
+            <h2>Trained Models</h2>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <thead>
+                    <tr style="background-color: var(--bg-color);">
+                        <th style="padding: 10px; text-align: left;">Model ID</th>
+                        <th style="padding: 10px; text-align: left;">Name</th>
+                        <th style="padding: 10px; text-align: left;">Architecture</th>
+                        <th style="padding: 10px; text-align: left;">Generation</th>
+                        <th style="padding: 10px; text-align: left;">Fitness</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="5" style="padding: 20px; text-align: center; color: #999;">
+                            No models trained yet. Start a training run to create AI models.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="menu">
+            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Back to Home</a>
+        </div>
+    </div>
+</body>
+
+</html>

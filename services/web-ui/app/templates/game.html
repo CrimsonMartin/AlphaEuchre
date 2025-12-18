@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>🃏 Euchre Game</h1>
+
+        <!-- Scoreboard -->
+        <div class="scoreboard">
+            <h2>Score</h2>
+            <div class="score-display">
+                <div class="team-score">
+                    <h3>Team 1</h3>
+                    <div class="score">{{ game_state.get('score', {}).get('team1', 0) }}</div>
+                </div>
+                <div class="team-score">
+                    <h3>Team 2</h3>
+                    <div class="score">{{ game_state.get('score', {}).get('team2', 0) }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Table -->
+        <div class="game-table">
+            <!-- Player positions -->
+            <div class="player-area player-north">
+                <strong>{{ game_state.get('players', ['','','',''])[2] }}</strong>
+            </div>
+            <div class="player-area player-east">
+                <strong>{{ game_state.get('players', ['','','',''])[3] }}</strong>
+            </div>
+            <div class="player-area player-south">
+                <strong>{{ game_state.get('players', ['','','',''])[0] }}</strong>
+            </div>
+            <div class="player-area player-west">
+                <strong>{{ game_state.get('players', ['','','',''])[1] }}</strong>
+            </div>
+        </div>
+
+        <!-- Player's Hand -->
+        {% if game_state.get('hand') %}
+        <div class="scoreboard">
+            <h2>Your Hand</h2>
+            <div style="text-align: center; padding: 20px;">
+                {% for card in game_state.get('hand', []) %}
+                <div class="card {% if card.suit in ['H', 'D'] %}red{% else %}black{% endif %}">
+                    {{ card.rank }}{{ card.suit }}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Game Info -->
+        <div class="scoreboard">
+            <h3>Game Status</h3>
+            <p><strong>Phase:</strong> {{ game_state.get('phase', 'Unknown') }}</p>
+            <p><strong>Trump:</strong> {{ game_state.get('trump', 'Not set') }}</p>
+            <p><strong>Current Player:</strong> {{ game_state.get('current_player', 'Unknown') }}</p>
+        </div>
+
+        <div class="menu">
+            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Exit Game</a>
+        </div>
+    </div>
+</body>
+
+</html>

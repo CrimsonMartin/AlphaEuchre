@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - New Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>🃏 New Game</h1>
+
+        <div class="scoreboard">
+            <h2>Configure Players</h2>
+            <form method="POST" action="{{ url_for('main.new_game') }}">
+                <div style="margin: 20px 0;">
+                    <h3>Player 1 (You)</h3>
+                    <input type="text" name="player0" value="Player 1" required
+                        style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
+                    <input type="hidden" name="type0" value="human">
+                </div>
+
+                <div style="margin: 20px 0;">
+                    <h3>Player 2</h3>
+                    <input type="text" name="player1" value="Player 2" required
+                        style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
+                    <select name="type1"
+                        style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
+                        <option value="random_ai">Random AI</option>
+                        <option value="human">Human</option>
+                    </select>
+                </div>
+
+                <div style="margin: 20px 0;">
+                    <h3>Player 3</h3>
+                    <input type="text" name="player2" value="Player 3" required
+                        style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
+                    <select name="type2"
+                        style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
+                        <option value="random_ai">Random AI</option>
+                        <option value="human">Human</option>
+                    </select>
+                </div>
+
+                <div style="margin: 20px 0;">
+                    <h3>Player 4</h3>
+                    <input type="text" name="player3" value="Player 4" required
+                        style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
+                    <select name="type3"
+                        style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
+                        <option value="random_ai">Random AI</option>
+                        <option value="human">Human</option>
+                    </select>
+                </div>
+
+                <div class="menu">
+                    <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Cancel</a>
+                    <button type="submit" class="btn btn-primary" style="border: none; cursor: pointer;">Start
+                        Game</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</body>
+
+</html>
