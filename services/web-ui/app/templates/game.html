@@ -6,6 +6,86 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EuchreBot - Game</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .card {
+            display: inline-block;
+            padding: 10px 15px;
+            margin: 5px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .card.red {
+            color: #e74c3c;
+        }
+
+        .card.black {
+            color: #2c3e50;
+        }
+
+        .trump-selection {
+            padding: 20px;
+            text-align: center;
+        }
+
+        .trump-selection button {
+            margin: 10px;
+            padding: 15px 30px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .trump-selection button:hover {
+            background-color: var(--secondary-color);
+        }
+
+        .trick-area {
+            position: relative;
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .trick-card {
+            position: absolute;
+            padding: 15px 20px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            background: white;
+            font-weight: bold;
+            font-size: 20px;
+        }
+
+        .trick-card.north {
+            top: 20px;
+        }
+
+        .trick-card.south {
+            bottom: 20px;
+        }
+
+        .trick-card.east {
+            right: 20px;
+        }
+
+        .trick-card.west {
+            left: 20px;
+        }
+    </style>
 </head>
 
 <body>
@@ -19,10 +99,12 @@
                 <div class="team-score">
                     <h3>Team 1</h3>
                     <div class="score">{{ game_state.get('score', {}).get('team1', 0) }}</div>
+                    <small>Tricks: {{ game_state.get('team1_tricks', 0) }}</small>
                 </div>
                 <div class="team-score">
                     <h3>Team 2</h3>
                     <div class="score">{{ game_state.get('score', {}).get('team2', 0) }}</div>
+                    <small>Tricks: {{ game_state.get('team2_tricks', 0) }}</small>
                 </div>
             </div>
         </div>
@@ -32,28 +114,113 @@
             <!-- Player positions -->
             <div class="player-area player-north">
                 <strong>{{ game_state.get('players', ['','','',''])[2] }}</strong>
+                {% if game_state.get('current_player_position') == 2 %}
+                <span style="color: #f39c12;">⭐</span>
+                {% endif %}
             </div>
             <div class="player-area player-east">
                 <strong>{{ game_state.get('players', ['','','',''])[3] }}</strong>
+                {% if game_state.get('current_player_position') == 3 %}
+                <span style="color: #f39c12;">⭐</span>
+                {% endif %}
             </div>
             <div class="player-area player-south">
                 <strong>{{ game_state.get('players', ['','','',''])[0] }}</strong>
+                {% if game_state.get('current_player_position') == 0 %}
+                <span style="color: #f39c12;">⭐</span>
+                {% endif %}
             </div>
             <div class="player-area player-west">
                 <strong>{{ game_state.get('players', ['','','',''])[1] }}</strong>
+                {% if game_state.get('current_player_position') == 1 %}
+                <span style="color: #f39c12;">⭐</span>
+                {% endif %}
             </div>
+
+            <!-- Current trick display -->
+            {% if game_state.get('current_trick') %}
+            <div class="trick-area">
+                {% for card_play in game_state.get('current_trick', {}).get('cards', []) %}
+                {% set pos = card_play.position %}
+                {% set card = card_play.card %}
+                {% if pos == 0 %}
+                <div class="trick-card south">{{ card }}</div>
+                {% elif pos == 1 %}
+                <div class="trick-card west">{{ card }}</div>
+                {% elif pos == 2 %}
+                <div class="trick-card north">{{ card }}</div>
+                {% elif pos == 3 %}
+                <div class="trick-card east">{{ card }}</div>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
         </div>
 
+        <!-- Trump Selection Phase -->
+        {% if game_state.get('phase') in ['trump_selection_round1', 'trump_selection_round2'] %}
+        <div class="scoreboard">
+            <h2>Trump Selection</h2>
+            {% if game_state.get('turned_up_card') %}
+            <p><strong>Turned Up Card:</strong> <span class="card">{{ game_state.get('turned_up_card') }}</span></p>
+            {% endif %}
+
+            {% if game_state.get('current_player_position') == player_position %}
+            <div class="trump-selection">
+                <p><strong>Your turn to call trump!</strong></p>
+
+                {% if game_state.get('phase') == 'trump_selection_round1' %}
+                <form method="POST" action="{{ url_for('main.call_trump_action') }}" style="display: inline;">
+                    <button type="submit" name="suit" value="{{ game_state.get('turned_up_card', '')[-1] }}">
+                        Order Up ({{ game_state.get('turned_up_card', '')[-1] }})
+                    </button>
+                </form>
+                {% else %}
+                <form method="POST" action="{{ url_for('main.call_trump_action') }}" style="display: inline;">
+                    <button type="submit" name="suit" value="H">Hearts ♥</button>
+                    <button type="submit" name="suit" value="D">Diamonds ♦</button>
+                    <button type="submit" name="suit" value="C">Clubs ♣</button>
+                    <button type="submit" name="suit" value="S">Spades ♠</button>
+                </form>
+                {% endif %}
+
+                <form method="POST" action="{{ url_for('main.call_trump_action') }}" style="display: inline;">
+                    <button type="submit" name="pass" value="true" style="background-color: #95a5a6;">Pass</button>
+                </form>
+            </div>
+            {% else %}
+            <p style="text-align: center; padding: 20px;">
+                Waiting for {{ game_state.get('current_player') }} to call trump...
+            </p>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <!-- Player's Hand -->
-        {% if game_state.get('hand') %}
+        {% if game_state.get('hand') and game_state.get('phase') == 'playing' %}
         <div class="scoreboard">
             <h2>Your Hand</h2>
             <div style="text-align: center; padding: 20px;">
+                {% if game_state.get('current_player_position') == player_position %}
+                <p><strong>Your turn! Play a card:</strong></p>
                 {% for card in game_state.get('hand', []) %}
-                <div class="card {% if card.suit in ['H', 'D'] %}red{% else %}black{% endif %}">
-                    {{ card.rank }}{{ card.suit }}
+                <form method="POST" action="{{ url_for('main.play_card') }}" style="display: inline;">
+                    <button type="submit" name="card" value="{{ card }}"
+                        class="card {% if card[-1] in ['H', 'D'] %}red{% else %}black{% endif %}"
+                        style="background: white; border: 2px solid #ccc;">
+                        {{ card }}
+                    </button>
+                </form>
+                {% endfor %}
+                {% else %}
+                <p>Waiting for {{ game_state.get('current_player') }} to play...</p>
+                {% for card in game_state.get('hand', []) %}
+                <div class="card {% if card[-1] in ['H', 'D'] %}red{% else %}black{% endif %}"
+                    style="cursor: default; opacity: 0.6;">
+                    {{ card }}
                 </div>
                 {% endfor %}
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -64,12 +231,16 @@
             <p><strong>Phase:</strong> {{ game_state.get('phase', 'Unknown') }}</p>
             <p><strong>Trump:</strong> {{ game_state.get('trump', 'Not set') }}</p>
             <p><strong>Current Player:</strong> {{ game_state.get('current_player', 'Unknown') }}</p>
+            <p><strong>Dealer:</strong> {{ game_state.get('players', ['','','',''])[game_state.get('dealer_position',
+                0)] }}</p>
         </div>
 
         <div class="menu">
+            <button onclick="location.reload()" class="btn btn-primary">Refresh Game</button>
             <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Exit Game</a>
         </div>
     </div>
+
 </body>
 
 </html>

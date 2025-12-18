@@ -5,16 +5,98 @@ Game management routes
 from flask import Blueprint, request, jsonify
 import json
 import uuid
+import random
 from euchre_core import EuchreGame, PlayerType, Card, Suit
+from euchre_core.game import GamePhase
 from app import redis_client
 
-game_bp = Blueprint('game', __name__)
+game_bp = Blueprint("game", __name__)
+
+
+def process_ai_turns(game: EuchreGame, max_iterations=10):
+    """
+    Process AI player turns until it's a human player's turn or game phase changes.
+    Returns True if any AI turns were processed.
+    """
+    iterations = 0
+    ai_played = False
+
+    while iterations < max_iterations:
+        current_player = game.state.get_current_player()
+
+        # Stop if current player is human
+        if current_player.player_type == PlayerType.HUMAN:
+            break
+
+        # Stop if game is over or in setup
+        if game.state.phase in [
+            GamePhase.SETUP,
+            GamePhase.GAME_OVER,
+            GamePhase.HAND_COMPLETE,
+        ]:
+            break
+
+        # AI player's turn - make a decision
+        if game.state.phase in [
+            GamePhase.TRUMP_SELECTION_ROUND1,
+            GamePhase.TRUMP_SELECTION_ROUND2,
+        ]:
+            # Trump selection phase
+            if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
+                # Simple AI: 50% chance to call trump in round 1
+                if random.random() < 0.5:
+                    game.call_trump(suit=None, go_alone=False)
+                    ai_played = True
+                else:
+                    game.pass_trump()
+                    ai_played = True
+            else:
+                # Round 2: Must call if dealer, otherwise 70% chance
+                is_dealer = (
+                    game.state.current_player_position == game.state.dealer_position
+                )
+                if is_dealer or random.random() < 0.7:
+                    # Pick a random suit (not the turned up card's suit)
+                    turned_up_suit = (
+                        game.state.turned_up_card.suit
+                        if game.state.turned_up_card
+                        else None
+                    )
+                    available_suits = [
+                        s
+                        for s in [Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS, Suit.SPADES]
+                        if s != turned_up_suit
+                    ]
+                    suit = random.choice(available_suits)
+                    game.call_trump(suit=suit, go_alone=False)
+                    ai_played = True
+                else:
+                    game.pass_trump()
+                    ai_played = True
+
+        elif game.state.phase == GamePhase.PLAYING:
+            # Playing phase - play a random valid card
+            valid_cards = game.get_valid_moves(game.state.current_player_position)
+            if valid_cards:
+                card = random.choice(valid_cards)
+                game.play_card(card)
+                ai_played = True
+            else:
+                # No valid cards - shouldn't happen, but break to avoid infinite loop
+                break
+        else:
+            # Unknown phase, break
+            break
+
+        iterations += 1
+
+    return ai_played
 
 
 def save_game_to_redis(game: EuchreGame):
     """Save game state to Redis"""
     key = f"game:{game.state.game_id}"
-    state_dict = game.get_state(perspective_position=None)
+    state_dict = game.state.to_dict(include_hands=True)
     redis_client.set(key, json.dumps(state_dict), ex=3600)  # 1 hour expiry
 
 
@@ -24,122 +106,222 @@ def load_game_from_redis(game_id: str) -> EuchreGame:
     data = redis_client.get(key)
     if not data:
         return None
-    
-    # For now, we'll need to reconstruct the game
-    # In production, consider storing serialized game object
+
     state_dict = json.loads(data)
-    
-    # This is simplified - full implementation would reconstruct game state
+
+    # Reconstruct the game from saved state
     game = EuchreGame(game_id)
+
+    # Restore players
+    for player_data in state_dict["players"]:
+        game.add_player(player_data["name"], PlayerType[player_data["type"].upper()])
+
+    # Restore game state
+    from euchre_core.game import GamePhase
+
+    game.state.phase = GamePhase(state_dict["phase"])
+    game.state.hand_number = state_dict["hand_number"]
+    game.state.dealer_position = state_dict["dealer_position"]
+    game.state.current_player_position = state_dict["current_player_position"]
+    game.state.trump_caller_position = state_dict["trump_caller_position"]
+    game.state.going_alone = state_dict["going_alone"]
+    game.state.alone_player_position = state_dict["alone_player_position"]
+    game.state.team1_score = state_dict["team1_score"]
+    game.state.team2_score = state_dict["team2_score"]
+    game.state.team1_tricks = state_dict["team1_tricks"]
+    game.state.team2_tricks = state_dict["team2_tricks"]
+
+    # Restore trump and turned up card
+    if state_dict["trump"]:
+        game.state.trump = Suit(state_dict["trump"])
+    if state_dict["turned_up_card"]:
+        game.state.turned_up_card = Card.from_string(state_dict["turned_up_card"])
+
+    # Restore player hands
+    for i, player_data in enumerate(state_dict["players"]):
+        if "hand" in player_data:
+            cards = [Card.from_string(card_str) for card_str in player_data["hand"]]
+            game.state.players[i].hand = cards
+
+    # Restore current trick if exists
+    if state_dict["current_trick"]:
+        from euchre_core.trick import Trick
+
+        trick_data = state_dict["current_trick"]
+        game.state.current_trick = Trick(trick_data["lead_position"], game.state.trump)
+        for card_data in trick_data["cards"]:
+            card = Card.from_string(card_data["card"])
+            game.state.current_trick.cards.append((card_data["position"], card))
+
     return game
 
 
-@game_bp.route('/games', methods=['POST'])
+@game_bp.route("/games", methods=["POST"])
 def create_game():
     """Create a new game"""
     data = request.json
-    players = data.get('players', [])
-    
+    players = data.get("players", [])
+
     if len(players) != 4:
-        return jsonify({'error': 'Exactly 4 players required'}), 400
-    
+        return jsonify({"error": "Exactly 4 players required"}), 400
+
     game_id = str(uuid.uuid4())
     game = EuchreGame(game_id)
-    
+
     for player_data in players:
-        name = player_data.get('name', 'Player')
-        player_type_str = player_data.get('type', 'human')
-        
+        name = player_data.get("name", "Player")
+        player_type_str = player_data.get("type", "human")
+
         player_type = PlayerType.HUMAN
-        if player_type_str == 'random_ai':
+        if player_type_str == "random_ai":
             player_type = PlayerType.RANDOM_AI
-        elif player_type_str == 'neural_net_ai':
+        elif player_type_str == "neural_net_ai":
             player_type = PlayerType.NEURAL_NET_AI
-        
+
         game.add_player(name, player_type)
-    
+
     # Start first hand
     game.start_new_hand()
-    
+
     save_game_to_redis(game)
-    
-    return jsonify({
-        'game_id': game_id,
-        'state': game.get_state()
-    }), 201
+
+    return jsonify({"game_id": game_id, "state": game.get_state()}), 201
 
 
-@game_bp.route('/games/<game_id>', methods=['GET'])
+@game_bp.route("/games/<game_id>", methods=["GET"])
 def get_game(game_id):
     """Get game state"""
-    perspective = request.args.get('perspective', type=int)
-    
-    # For now, return mock state since we haven't implemented full serialization
-    return jsonify({
-        'game_id': game_id,
-        'phase': 'playing',
-        'message': 'Game state endpoint - full implementation pending'
-    })
+    perspective = request.args.get("perspective", type=int)
+
+    game = load_game_from_redis(game_id)
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    # Process AI turns until it's a human player's turn
+    ai_played = process_ai_turns(game)
+    if ai_played:
+        save_game_to_redis(game)
+
+    state = game.get_state(perspective_position=perspective)
+
+    # Format for web UI
+    formatted_state = {
+        "game_id": state["game_id"],
+        "phase": state["phase"],
+        "trump": state["trump"],
+        "current_player": (
+            state["players"][state["current_player_position"]]["name"]
+            if state["players"]
+            else "Unknown"
+        ),
+        "current_player_position": state["current_player_position"],
+        "dealer_position": state["dealer_position"],
+        "players": [p["name"] for p in state["players"]],
+        "score": {"team1": state["team1_score"], "team2": state["team2_score"]},
+        "hand": (
+            state["players"][perspective]["hand"]
+            if perspective is not None and perspective < len(state["players"])
+            else []
+        ),
+        "turned_up_card": state["turned_up_card"],
+        "current_trick": state["current_trick"],
+        "team1_tricks": state["team1_tricks"],
+        "team2_tricks": state["team2_tricks"],
+        "going_alone": state["going_alone"],
+    }
+
+    return jsonify(formatted_state)
 
 
-@game_bp.route('/games/<game_id>/move', methods=['POST'])
+@game_bp.route("/games/<game_id>/move", methods=["POST"])
 def play_move(game_id):
     """Play a card"""
     data = request.json
-    card_str = data.get('card')
-    
+    card_str = data.get("card")
+
     if not card_str:
-        return jsonify({'error': 'Card required'}), 400
-    
+        return jsonify({"error": "Card required"}), 400
+
     try:
         card = Card.from_string(card_str)
     except Exception as e:
-        return jsonify({'error': f'Invalid card: {str(e)}'}), 400
-    
-    # Load game, play card, save game
-    # Full implementation would load from Redis, play card, save back
-    
-    return jsonify({
-        'success': True,
-        'message': 'Move played',
-        'card': card_str
-    })
+        return jsonify({"error": f"Invalid card: {str(e)}"}), 400
+
+    # Load game from Redis
+    game = load_game_from_redis(game_id)
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    try:
+        # Play the card
+        result = game.play_card(card)
+
+        # Process AI turns after human move
+        process_ai_turns(game)
+
+        # Save updated game state
+        save_game_to_redis(game)
+
+        return jsonify({"success": True, "result": result, "state": game.get_state()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
-@game_bp.route('/games/<game_id>/trump', methods=['POST'])
+@game_bp.route("/games/<game_id>/trump", methods=["POST"])
 def call_trump(game_id):
     """Call trump suit"""
     data = request.json
-    suit_str = data.get('suit')
-    go_alone = data.get('go_alone', False)
-    pass_trump = data.get('pass', False)
-    
-    if pass_trump:
-        return jsonify({
-            'success': True,
-            'action': 'pass'
-        })
-    
-    if suit_str:
-        try:
-            suit = Suit.from_string(suit_str)
-        except Exception as e:
-            return jsonify({'error': f'Invalid suit: {str(e)}'}), 400
-    else:
-        suit = None
-    
-    return jsonify({
-        'success': True,
-        'action': 'call_trump',
-        'suit': suit_str,
-        'go_alone': go_alone
-    })
+    suit_str = data.get("suit")
+    go_alone = data.get("go_alone", False)
+    pass_trump = data.get("pass", False)
+
+    # Load game from Redis
+    game = load_game_from_redis(game_id)
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    try:
+        if pass_trump:
+            # Player passes on trump
+            game.pass_trump()
+
+            # Process AI turns after human pass
+            process_ai_turns(game)
+
+            save_game_to_redis(game)
+            return jsonify(
+                {"success": True, "action": "pass", "state": game.get_state()}
+            )
+        else:
+            # Player calls trump
+            suit = None
+            if suit_str:
+                suit = Suit.from_string(suit_str)
+
+            game.call_trump(suit, go_alone)
+
+            # Process AI turns after human calls trump
+            process_ai_turns(game)
+
+            save_game_to_redis(game)
+
+            return jsonify(
+                {
+                    "success": True,
+                    "action": "call_trump",
+                    "suit": suit_str,
+                    "go_alone": go_alone,
+                    "state": game.get_state(),
+                }
+            )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
-@game_bp.route('/games/<game_id>', methods=['DELETE'])
+@game_bp.route("/games/<game_id>", methods=["DELETE"])
 def delete_game(game_id):
     """Delete/abandon a game"""
     key = f"game:{game_id}"
     redis_client.delete(key)
-    
-    return jsonify({'success': True, 'message': 'Game deleted'})
+
+    return jsonify({"success": True, "message": "Game deleted"})
