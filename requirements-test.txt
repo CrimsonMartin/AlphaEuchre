@@ -1,6 +1,35 @@
-# Test dependencies for EuchreBot
+# Test dependencies for EuchreBot Development Environment
 pytest==7.4.3
 pytest-cov==4.1.0
 pytest-mock==3.12.0
 fakeredis==2.20.1
+
+# Flask and extensions
 Flask==3.0.0
+Flask-CORS==4.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Session>=0.8.0
+
+# Database
+psycopg2-binary==2.9.9
+
+# Redis
+redis==5.0.1
+
+# HTTP/Networking
+requests==2.31.0
+gunicorn==21.2.0
+
+# Utilities
+python-dotenv==1.0.0
+colorama==0.4.6
+numpy==1.26.2
+
+# AI/ML
+torch==2.1.0
+
+# Development tools
+black==23.11.0
+pylint==3.0.3
+ipython==8.18.1
+jupyter==1.0.0
