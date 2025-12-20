@@ -137,9 +137,9 @@ def test_get_valid_moves_follow_suit_logic(client):
     assert response.status_code == 201
     game_id = response.json['game_id']
 
-    # Call trump to move to playing phase
+    # Call trump to move to playing phase (round 1 - pick up turned up card)
     trump_response = client.post(f'/api/games/{game_id}/trump', json={
-        'suit': 'C',
+        'suit': None,
         'go_alone': False
     })
     assert trump_response.status_code == 200

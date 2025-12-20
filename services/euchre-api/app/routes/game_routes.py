@@ -394,7 +394,7 @@ def get_valid_moves(game_id):
         "must_follow_suit": len(valid_cards) < len(hand) if hand else False,
         "current_trick_lead_suit": (
             game.state.current_trick.lead_suit.value
-            if game.state.current_trick
+            if game.state.current_trick and game.state.current_trick.lead_suit
             else None
         ),
         "trump_suit": game.state.trump.value if game.state.trump else None,
