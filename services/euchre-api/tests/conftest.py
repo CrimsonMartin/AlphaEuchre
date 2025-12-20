@@ -10,12 +10,14 @@ from app import create_app, db
 @pytest.fixture
 def app():
     """Create and configure a test Flask application"""
-    app = create_app()
-    app.config.update({
+    test_config = {
         'TESTING': True,
         'SQLALCHEMY_DATABASE_URI': 'sqlite:///:memory:',
+        'SQLALCHEMY_TRACK_MODIFICATIONS': False,
         'SECRET_KEY': 'test-secret-key'
-    })
+    }
+    
+    app = create_app(test_config)
     
     with app.app_context():
         db.create_all()
