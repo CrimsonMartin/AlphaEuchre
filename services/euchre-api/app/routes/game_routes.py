@@ -232,7 +232,9 @@ def get_game(game_id):
         "score": {"team1": state["team1_score"], "team2": state["team2_score"]},
         "hand": (
             state["players"][perspective]["hand"]
-            if perspective is not None and perspective < len(state["players"])
+            if perspective is not None
+            and 0 <= perspective < len(state["players"])
+            and "hand" in state["players"][perspective]
             else []
         ),
         "turned_up_card": state["turned_up_card"],
@@ -283,6 +285,9 @@ def play_move(game_id):
 def call_trump(game_id):
     """Call trump suit"""
     data = request.json
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
     suit_str = data.get("suit")
     go_alone = data.get("go_alone", False)
     pass_trump = data.get("pass", False)
@@ -292,42 +297,47 @@ def call_trump(game_id):
     if not game:
         return jsonify({"error": "Game not found"}), 404
 
-    try:
-        if pass_trump:
-            # Player passes on trump
+    if pass_trump:
+        # Player passes on trump
+        try:
             game.pass_trump()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
-            # Process AI turns after human pass
-            process_ai_turns(game)
+        # Process AI turns after human pass
+        process_ai_turns(game)
 
-            save_game_to_redis(game)
-            return jsonify(
-                {"success": True, "action": "pass", "state": game.get_state()}
-            )
-        else:
-            # Player calls trump
-            suit = None
-            if suit_str:
+        save_game_to_redis(game)
+
+        return jsonify({"success": True, "action": "pass", "state": game.get_state()})
+    else:
+        # Player calls trump
+        suit = None
+        if suit_str:
+            try:
                 suit = Suit.from_string(suit_str)
+            except Exception as e:
+                return jsonify({"error": f"Invalid suit: {str(e)}"}), 400
 
+        try:
             game.call_trump(suit, go_alone)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
-            # Process AI turns after human calls trump
-            process_ai_turns(game)
+        # Process AI turns after human calls trump
+        process_ai_turns(game)
 
-            save_game_to_redis(game)
+        save_game_to_redis(game)
 
-            return jsonify(
-                {
-                    "success": True,
-                    "action": "call_trump",
-                    "suit": suit_str,
-                    "go_alone": go_alone,
-                    "state": game.get_state(),
-                }
-            )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify(
+            {
+                "success": True,
+                "action": "call_trump",
+                "suit": suit_str,
+                "go_alone": go_alone,
+                "state": game.get_state(),
+            }
+        )
 
 
 @game_bp.route("/games/<game_id>/discard", methods=["POST"])
