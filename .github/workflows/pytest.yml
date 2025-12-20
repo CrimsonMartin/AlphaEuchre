@@ -31,27 +31,19 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-pip-
     
-    - name: Install euchre_core package
+    - name: Install dependencies
       run: |
-        cd shared/euchre_core
-        pip install -e .
-    
-    - name: Install euchre-api dependencies
-      run: |
-        cd services/euchre-api
-        pip install -r requirements.txt
         pip install -r requirements-test.txt
+        pip install -e shared/euchre_core
     
     - name: Run pytest with coverage
-      run: |
-        cd services/euchre-api
-        pytest
+      run: pytest
     
     - name: Upload coverage reports
       uses: codecov/codecov-action@v4
       if: matrix.python-version == '3.11'
       with:
-        file: ./services/euchre-api/coverage.xml
+        file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
@@ -61,7 +53,7 @@ jobs:
       if: matrix.python-version == '3.11'
       with:
         name: coverage-report
-        path: services/euchre-api/htmlcov/
+        path: htmlcov/
         retention-days: 30
     
     - name: Comment coverage on PR
