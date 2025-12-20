@@ -48,6 +48,6 @@
       }
     }
   },
-  "postCreateCommand": "pip install -e shared/euchre_core && echo 'DevContainer ready!'",
+  "postCreateCommand": "pip install -e shared/euchre_core && pip install -r requirements-test.txt && echo 'DevContainer ready!'",
   "remoteUser": "vscode"
 }

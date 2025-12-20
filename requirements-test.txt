@@ -1,0 +1,6 @@
+# Test dependencies for EuchreBot
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+fakeredis==2.20.1
+Flask==3.0.0
