@@ -86,11 +86,13 @@ CREATE TABLE IF NOT EXISTS ai_models (
     model_weights BYTEA,
     model_path VARCHAR(500),
     performance_metrics JSONB,
+    elo_rating FLOAT DEFAULT 1500,
     wins INTEGER DEFAULT 0,
     losses INTEGER DEFAULT 0,
     games_played INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
-    active BOOLEAN DEFAULT TRUE
+    active BOOLEAN DEFAULT TRUE,
+    is_best_overall BOOLEAN DEFAULT FALSE
 );
 
 -- Training runs table - tracks genetic algorithm runs

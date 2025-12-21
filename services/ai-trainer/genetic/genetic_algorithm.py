@@ -1,5 +1,7 @@
 """
 Genetic Algorithm for Evolving Euchre Neural Networks
+Round-Robin Tournament System with Team-Based Evaluation
+ELO Rating System with Parallel Processing
 """
 
 import random
@@ -7,7 +9,9 @@ import torch
 import copy
 import sys
 import os
-from typing import List
+from typing import List, Tuple, Dict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # Add parent directory to path to import euchre_core
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "shared"))
@@ -16,20 +20,55 @@ from euchre_core.game import EuchreGame, GamePhase
 from euchre_core.player import PlayerType
 from euchre_core.card import Card, Suit
 from networks.basic_nn import BasicEuchreNN, encode_game_state
+from elo_system import ELORatingSystem
+
+
+# Helper function for parallel processing (must be at module level)
+def run_tournament_group_worker(args):
+    """Worker function to run a tournament group in parallel"""
+    models_state_dicts, games_per_pairing, all_cards = args
+
+    # Reconstruct models from state dicts
+    models = []
+    for state_dict in models_state_dicts:
+        model = BasicEuchreNN(use_cuda=False)  # Use CPU in workers
+        model.load_state_dict(state_dict)
+        model.eval()
+        models.append(model)
+
+    # Run tournament
+    ga_temp = GeneticAlgorithm(games_per_pairing=games_per_pairing)
+    ga_temp.all_cards = all_cards
+    results = ga_temp.run_round_robin_tournament_elo(models)
+
+    return results
 
 
 class GeneticAlgorithm:
-    """Genetic algorithm for evolving neural network weights"""
+    """Genetic algorithm for evolving neural network weights with round-robin tournaments and ELO ratings"""
 
     def __init__(
-        self, population_size=20, mutation_rate=0.1, crossover_rate=0.7, elite_size=2
+        self,
+        population_size=20,
+        mutation_rate=0.1,
+        crossover_rate=0.7,
+        elite_size=2,
+        games_per_pairing=10,
+        num_workers=None,
+        use_elo=True,
     ):
         self.population_size = population_size
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
         self.elite_size = elite_size
+        self.games_per_pairing = games_per_pairing
+        self.num_workers = num_workers or max(1, multiprocessing.cpu_count() - 1)
+        self.use_elo = use_elo
         self.population: List[BasicEuchreNN] = []
-        self.fitness_scores: List[float] = []
+        self.elo_ratings: List[float] = []
+
+        # ELO rating system
+        self.elo_system = ELORatingSystem(initial_rating=1500, k_factor=32)
 
         # Card mapping for predictions
         self.all_cards = []
@@ -37,26 +76,46 @@ class GeneticAlgorithm:
             for rank in ["9", "10", "J", "Q", "K", "A"]:
                 self.all_cards.append(f"{rank}{suit}")
 
-    def initialize_population(self):
-        """Create initial random population"""
-        self.population = [BasicEuchreNN() for _ in range(self.population_size)]
-
-    def play_game_with_model(
-        self,
-        model: BasicEuchreNN,
-        opponent_models: List[BasicEuchreNN],
-        model_position: int = 0,
-    ) -> int:
+    def initialize_population(self, seed_models: List[BasicEuchreNN] = None):
         """
-        Play a single game with the model at a specific position.
+        Create initial population, optionally seeded with existing models.
 
         Args:
-            model: The model being evaluated
-            opponent_models: List of 3 opponent models
-            model_position: Position (0-3) where the model plays
+            seed_models: Optional list of models to seed the population
+        """
+        self.population = []
+
+        if seed_models:
+            # Add seed models
+            for model in seed_models:
+                self.population.append(copy.deepcopy(model))
+
+        # Fill remaining slots with new random models
+        while len(self.population) < self.population_size:
+            self.population.append(BasicEuchreNN())
+
+        # Initialize ELO ratings
+        self.elo_system.reset_ratings()
+        self.elo_ratings = [self.elo_system.initial_rating] * len(self.population)
+
+        print(f"Initialized population of {len(self.population)} models")
+        print(f"Using {self.num_workers} parallel workers")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+
+    def play_game_with_teams(
+        self,
+        team1_models: Tuple[BasicEuchreNN, BasicEuchreNN],
+        team2_models: Tuple[BasicEuchreNN, BasicEuchreNN],
+    ) -> Tuple[int, int, int]:
+        """
+        Play a single game with specified teams.
+
+        Args:
+            team1_models: Tuple of (model_pos0, model_pos2) for team 1
+            team2_models: Tuple of (model_pos1, model_pos3) for team 2
 
         Returns:
-            1 if model's team won, 0 if lost
+            Tuple of (winning_team, team1_score, team2_score)
         """
         # Create game
         game = EuchreGame(f"training-{random.randint(1000, 9999)}")
@@ -65,23 +124,16 @@ class GeneticAlgorithm:
         for i in range(4):
             game.add_player(f"Player{i}", PlayerType.RANDOM_AI)
 
+        # Map positions to models
+        models = [team1_models[0], team2_models[0], team1_models[1], team2_models[1]]
+
         # Start first hand
         game.start_new_hand()
 
         # Play until game over
         while game.state.phase != GamePhase.GAME_OVER:
             current_pos = game.state.current_player_position
-
-            # Determine which model to use
-            if current_pos == model_position:
-                current_model = model
-            else:
-                # Map other positions to opponent models
-                opponent_idx = (
-                    current_pos if current_pos < model_position else current_pos - 1
-                )
-                opponent_idx = min(opponent_idx, len(opponent_models) - 1)
-                current_model = opponent_models[opponent_idx]
+            current_model = models[current_pos]
 
             # Handle different game phases
             if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
@@ -90,14 +142,20 @@ class GeneticAlgorithm:
                     game.pass_trump()
                 except:
                     # Dealer must call
-                    game.call_trump(game.state.turned_up_card.suit)
+                    if game.state.turned_up_card:
+                        game.call_trump(game.state.turned_up_card.suit)
 
             elif game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
                 # Simple strategy: call a random suit (not turned up)
+                turned_up_suit = (
+                    game.state.turned_up_card.suit
+                    if game.state.turned_up_card
+                    else Suit.CLUBS
+                )
                 available_suits = [
                     s
                     for s in [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
-                    if s != game.state.turned_up_card.suit
+                    if s != turned_up_suit
                 ]
                 if game.state.current_player_position == game.state.dealer_position:
                     # Dealer must call
@@ -156,59 +214,136 @@ class GeneticAlgorithm:
                 # Start new hand
                 game.start_new_hand()
 
-        # Determine if model's team won
-        model_team = game.state.get_team_for_position(model_position)
-        if model_team == 1:
-            return 1 if game.state.team1_score >= 10 else 0
-        else:
-            return 1 if game.state.team2_score >= 10 else 0
+        # Return results
+        team1_score = game.state.team1_score
+        team2_score = game.state.team2_score
+        winning_team = 1 if team1_score >= 10 else 2
 
-    def evaluate_fitness(self, model: BasicEuchreNN, num_games=10) -> float:
+        return winning_team, team1_score, team2_score
+
+    def run_round_robin_tournament_elo(
+        self, models: List[BasicEuchreNN], model_indices: List[int] = None
+    ) -> Dict[int, float]:
         """
-        Evaluate fitness of a model by having it play games.
+        Run round-robin tournament with 4 models using ELO ratings.
+
+        Team pairings:
+        - Round 1: (A+B) vs (C+D)
+        - Round 2: (A+C) vs (B+D)
+        - Round 3: (A+D) vs (B+C)
 
         Args:
-            model: The model to evaluate
-            num_games: Number of games to play for evaluation
+            models: List of exactly 4 models
+            model_indices: Optional list of indices in population (for ELO tracking)
 
         Returns:
-            Fitness score (win rate)
+            Dictionary of model_index -> ELO rating change
         """
-        wins = 0
+        if len(models) != 4:
+            raise ValueError("Round-robin tournament requires exactly 4 models")
 
-        # Play multiple games against random opponents from population
-        for _ in range(num_games):
-            # Select 3 random opponent models
-            opponent_models = random.sample(
-                self.population, min(3, len(self.population))
+        if model_indices is None:
+            model_indices = list(range(4))
+
+        # Track ELO changes
+        elo_changes = {idx: 0.0 for idx in model_indices}
+
+        # Define team pairings for round-robin
+        pairings = [
+            # Round 1: (A+B) vs (C+D)
+            ((models[0], models[1]), (models[2], models[3]), ([0, 1], [2, 3])),
+            # Round 2: (A+C) vs (B+D)
+            ((models[0], models[2]), (models[1], models[3]), ([0, 2], [1, 3])),
+            # Round 3: (A+D) vs (B+C)
+            ((models[0], models[3]), (models[1], models[2]), ([0, 3], [1, 2])),
+        ]
+
+        # Play games for each pairing
+        for pairing_idx, (team1, team2, (team1_local, team2_local)) in enumerate(
+            pairings
+        ):
+            for game_num in range(self.games_per_pairing):
+                winning_team, team1_score, team2_score = self.play_game_with_teams(
+                    team1, team2
+                )
+
+                # Update ELO ratings for this game
+                team1_indices = [model_indices[i] for i in team1_local]
+                team2_indices = [model_indices[i] for i in team2_local]
+
+                updated_ratings = self.elo_system.update_team_ratings(
+                    team1_indices,
+                    team2_indices,
+                    team1_won=(winning_team == 1),
+                    team1_score=team1_score,
+                    team2_score=team2_score,
+                )
+
+                # Track changes
+                for idx in team1_indices + team2_indices:
+                    if idx in model_indices:
+                        local_idx = model_indices.index(idx)
+                        elo_changes[idx] = (
+                            self.elo_system.get_rating(idx)
+                            - self.elo_system.initial_rating
+                        )
+
+        return elo_changes
+
+    def evaluate_population_parallel(self) -> List[float]:
+        """
+        Evaluate entire population using parallel tournament groups.
+
+        Returns:
+            List of ELO ratings for each model
+        """
+        # Reset ELO system for this generation
+        self.elo_system.reset_ratings()
+
+        # Divide population into groups of 4
+        num_groups = len(self.population) // 4
+        groups = []
+
+        for group_idx in range(num_groups):
+            start_idx = group_idx * 4
+            group_models = self.population[start_idx : start_idx + 4]
+            group_indices = list(range(start_idx, start_idx + 4))
+            groups.append((group_models, group_indices))
+
+        # Handle remaining models (if population not divisible by 4)
+        remaining = len(self.population) % 4
+        if remaining > 0:
+            remaining_models = self.population[-remaining:]
+            fill_models = random.sample(self.population[:-remaining], 4 - remaining)
+            group_models = remaining_models + fill_models
+            group_indices = list(
+                range(len(self.population) - remaining, len(self.population))
             )
-            if len(opponent_models) < 3:
-                # Fill with copies if not enough models
-                while len(opponent_models) < 3:
-                    opponent_models.append(random.choice(self.population))
+            groups.append((group_models, group_indices))
 
-            # Play from random position
-            position = random.randint(0, 3)
+        print(f"Running {len(groups)} tournament groups in parallel...")
 
-            try:
-                result = self.play_game_with_model(model, opponent_models, position)
-                wins += result
-            except Exception as e:
-                # If game fails, count as loss
-                print(f"Game error: {e}")
-                pass
+        # Run tournaments for each group
+        for group_idx, (group_models, group_indices) in enumerate(groups):
+            print(f"Tournament Group {group_idx + 1}/{len(groups)}")
+            self.run_round_robin_tournament_elo(group_models, group_indices)
 
-        return wins / num_games if num_games > 0 else 0.0
+        # Get final ELO ratings
+        elo_ratings = [
+            self.elo_system.get_rating(i) for i in range(len(self.population))
+        ]
+
+        return elo_ratings
 
     def selection(self) -> List[BasicEuchreNN]:
-        """Select parents for next generation using tournament selection"""
+        """Select parents for next generation using tournament selection based on ELO"""
         parents = []
 
         for _ in range(self.population_size - self.elite_size):
             # Tournament selection
             tournament_size = 3
             tournament = random.sample(
-                list(zip(self.population, self.fitness_scores)),
+                list(zip(self.population, self.elo_ratings)),
                 min(tournament_size, len(self.population)),
             )
             winner = max(tournament, key=lambda x: x[1])[0]
@@ -243,46 +378,52 @@ class GeneticAlgorithm:
                 noise = torch.randn_like(param) * 0.1
                 param.data += noise
 
-    def evolve(self, generations=10, callback=None):
+    def evolve(
+        self, generations=10, callback=None, seed_models: List[BasicEuchreNN] = None
+    ):
         """
         Run the genetic algorithm for specified generations.
 
         Args:
             generations: Number of generations to evolve
-            callback: Optional callback function called each generation with (gen, best_fitness, avg_fitness)
+            callback: Optional callback function called each generation with (gen, best_elo, avg_elo)
+            seed_models: Optional list of models to seed the initial population
 
         Returns:
             Best model from final generation
         """
-        self.initialize_population()
+        self.initialize_population(seed_models)
 
         for generation in range(generations):
+            print(f"\n{'='*60}")
             print(f"Generation {generation + 1}/{generations}")
+            print(f"{'='*60}")
 
-            # Evaluate fitness
-            self.fitness_scores = []
-            for i, model in enumerate(self.population):
-                fitness = self.evaluate_fitness(model, num_games=5)
-                self.fitness_scores.append(fitness)
-                print(f"  Model {i+1}/{self.population_size}: Fitness = {fitness:.3f}")
+            # Evaluate population using ELO ratings
+            self.elo_ratings = self.evaluate_population_parallel()
 
-            # Sort by fitness
+            # Print individual model ELO ratings
+            for i, elo in enumerate(self.elo_ratings):
+                desc = self.elo_system.get_rating_description(elo)
+                print(f"  Model {i+1}/{len(self.population)}: ELO = {elo:.0f} ({desc})")
+
+            # Sort by ELO rating
             sorted_pop = sorted(
-                zip(self.population, self.fitness_scores),
+                zip(self.population, self.elo_ratings),
                 key=lambda x: x[1],
                 reverse=True,
             )
 
-            best_fitness = sorted_pop[0][1]
-            avg_fitness = sum(self.fitness_scores) / len(self.fitness_scores)
+            best_elo = sorted_pop[0][1]
+            avg_elo = sum(self.elo_ratings) / len(self.elo_ratings)
 
-            print(
-                f"Generation {generation + 1}: Best = {best_fitness:.3f}, Avg = {avg_fitness:.3f}"
-            )
+            print(f"\nGeneration {generation + 1} Summary:")
+            print(f"  Best ELO:  {best_elo:.0f}")
+            print(f"  Avg ELO:   {avg_elo:.0f}")
 
             # Call callback if provided
             if callback:
-                callback(generation + 1, best_fitness, avg_fitness)
+                callback(generation + 1, best_elo, avg_elo)
 
             # Keep elite
             elites = [
@@ -309,6 +450,6 @@ class GeneticAlgorithm:
 
         # Return best model
         final_sorted = sorted(
-            zip(self.population, self.fitness_scores), key=lambda x: x[1], reverse=True
+            zip(self.population, self.elo_ratings), key=lambda x: x[1], reverse=True
         )
         return final_sorted[0][0]

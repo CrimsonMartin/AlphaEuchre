@@ -115,6 +115,16 @@
                     <input type="number" id="generations" name="generations" value="10" min="1" max="100"
                         style="padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 150px;">
                 </div>
+                <div style="margin: 15px 0;">
+                    <label for="use_seeding" style="display: inline-block; width: 200px;">
+                        <input type="checkbox" id="use_seeding" name="use_seeding" value="true"
+                            style="margin-right: 8px;">
+                        Seed from Best Models (25%)
+                    </label>
+                    <div style="margin-left: 208px; font-size: 12px; color: #999;">
+                        Use top models from previous runs as starting point
+                    </div>
+                </div>
                 <div style="margin: 20px 0;">
                     <button type="submit" class="btn btn-primary" style="border: none; cursor: pointer;">
                         Start Training

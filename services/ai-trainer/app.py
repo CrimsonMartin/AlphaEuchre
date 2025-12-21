@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "shared")
 
 from genetic.genetic_algorithm import GeneticAlgorithm
 from networks.basic_nn import BasicEuchreNN
+from model_manager import ModelManager
 
 app = Flask(__name__)
 
@@ -80,7 +81,9 @@ def save_model_to_db(
         return None
 
 
-def run_training(run_id: str, population_size: int, generations: int):
+def run_training(
+    run_id: str, population_size: int, generations: int, use_seeding: bool = False
+):
     """Run training in background thread"""
     try:
         with training_lock:
@@ -114,12 +117,24 @@ def run_training(run_id: str, population_size: int, generations: int):
         except Exception as e:
             print(f"Error creating training run in DB: {e}")
 
-        # Initialize genetic algorithm
+        # Initialize model manager
+        model_manager = ModelManager(app.config["DATABASE_URL"])
+
+        # Get seed models if requested
+        seed_models = None
+        if use_seeding:
+            print("Seeding population from best previous models (25%)")
+            seed_models = model_manager.seed_population_from_best(
+                population_size, seed_percentage=0.25
+            )
+
+        # Initialize genetic algorithm with 10 games per pairing
         ga = GeneticAlgorithm(
             population_size=population_size,
             mutation_rate=0.1,
             crossover_rate=0.7,
             elite_size=2,
+            games_per_pairing=10,
         )
 
         # Callback to update progress
@@ -147,16 +162,26 @@ def run_training(run_id: str, population_size: int, generations: int):
             except Exception as e:
                 print(f"Error updating training run: {e}")
 
-        # Run evolution
+        # Run evolution with seed models
         print(f"Starting training run {run_id}")
-        best_model = ga.evolve(generations=generations, callback=progress_callback)
+        best_model = ga.evolve(
+            generations=generations, callback=progress_callback, seed_models=seed_models
+        )
 
-        # Save best model
+        # Save best model using ModelManager
         with training_lock:
-            best_fitness = training_runs[run_id].get("best_fitness", 0.0)
+            best_elo = training_runs[run_id].get(
+                "best_fitness", 1500.0
+            )  # Now stores ELO
 
-        model_id = save_model_to_db(
-            best_model, f"BestModel-Gen{generations}", generations, best_fitness, run_id
+        model_id = model_manager.save_model(
+            best_model,
+            f"BestModel-Gen{generations}",
+            generations,
+            best_elo,  # fitness parameter (for backwards compatibility)
+            run_id,
+            is_best=True,
+            elo_rating=best_elo,
         )
 
         # Mark as complete
@@ -202,6 +227,7 @@ def start_training():
     data = request.json
     population_size = data.get("population_size", 20)
     generations = data.get("generations", 10)
+    use_seeding = data.get("use_seeding", False)
 
     # Create training run ID
     run_id = str(uuid.uuid4())
@@ -212,6 +238,7 @@ def start_training():
             "status": "starting",
             "population_size": population_size,
             "generations": generations,
+            "use_seeding": use_seeding,
             "current_generation": 0,
             "best_fitness": 0.0,
             "avg_fitness": 0.0,
@@ -220,7 +247,7 @@ def start_training():
 
     # Start training in background thread
     thread = threading.Thread(
-        target=run_training, args=(run_id, population_size, generations)
+        target=run_training, args=(run_id, population_size, generations, use_seeding)
     )
     thread.daemon = True
     thread.start()
@@ -231,6 +258,7 @@ def start_training():
             "training_run_id": run_id,
             "population_size": population_size,
             "generations": generations,
+            "use_seeding": use_seeding,
         }
     )
 

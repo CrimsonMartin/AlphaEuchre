@@ -13,10 +13,17 @@ class BasicEuchreNN(nn.Module):
 
     Input: Game state encoding (65 features)
     Output: Probabilities for each possible card play (24 max)
+
+    Supports CUDA acceleration when available.
     """
 
-    def __init__(self, input_size=65, hidden_size=64, output_size=24):
+    def __init__(self, input_size=65, hidden_size=64, output_size=24, use_cuda=True):
         super(BasicEuchreNN, self).__init__()
+
+        # Determine device (CUDA if available and requested)
+        self.device = torch.device(
+            "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
+        )
 
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -24,6 +31,9 @@ class BasicEuchreNN(nn.Module):
 
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=1)
+
+        # Move model to device
+        self.to(self.device)
 
     def forward(self, x):
         """Forward pass through the network"""
@@ -44,12 +54,35 @@ class BasicEuchreNN(nn.Module):
         """
         with torch.no_grad():
             if isinstance(game_state_encoding, np.ndarray):
-                x = torch.FloatTensor(game_state_encoding).unsqueeze(0)
+                x = torch.FloatTensor(game_state_encoding).unsqueeze(0).to(self.device)
             else:
-                x = game_state_encoding
+                x = game_state_encoding.to(self.device)
 
             output = self.forward(x)
-            return torch.argmax(output, dim=1).item()
+            return torch.argmax(output, dim=1).cpu().item()
+
+    def predict_cards_batch(self, game_state_encodings):
+        """
+        Predict cards for multiple game states at once (batch inference).
+
+        This is more efficient on GPU than calling predict_card multiple times.
+
+        Args:
+            game_state_encodings: List of numpy arrays or batch tensor
+
+        Returns:
+            Numpy array of card indices
+        """
+        with torch.no_grad():
+            if isinstance(game_state_encodings, list):
+                batch = torch.stack(
+                    [torch.FloatTensor(s) for s in game_state_encodings]
+                ).to(self.device)
+            else:
+                batch = game_state_encodings.to(self.device)
+
+            outputs = self.forward(batch)
+            return torch.argmax(outputs, dim=1).cpu().numpy()
 
 
 def encode_game_state(game_state) -> np.ndarray:
