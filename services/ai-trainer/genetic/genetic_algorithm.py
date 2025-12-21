@@ -318,11 +318,18 @@ class GeneticAlgorithm:
         remaining = len(self.population) % 4
         if remaining > 0:
             remaining_models = self.population[-remaining:]
-            fill_models = random.sample(self.population[:-remaining], 4 - remaining)
+            # Get fill models and their indices
+            fill_count = 4 - remaining
+            fill_indices = random.sample(
+                range(len(self.population) - remaining), fill_count
+            )
+            fill_models = [self.population[i] for i in fill_indices]
             group_models = remaining_models + fill_models
-            group_indices = list(
+            # Include indices for ALL 4 models (remaining + fill)
+            remaining_indices = list(
                 range(len(self.population) - remaining, len(self.population))
             )
+            group_indices = remaining_indices + fill_indices
             groups.append((group_models, group_indices))
 
         print(f"Running {len(groups)} tournament groups in parallel...")

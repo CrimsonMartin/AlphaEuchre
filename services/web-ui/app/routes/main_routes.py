@@ -99,7 +99,8 @@ def history():
 @main_bp.route("/training", methods=["GET", "POST"])
 def training():
     """AI training dashboard"""
-    training_run_id = None
+    # Get training_run_id from session (persists across page refreshes)
+    training_run_id = session.get("training_run_id")
 
     if request.method == "POST":
         population_size = request.form.get("population_size", 20, type=int)
@@ -136,6 +137,8 @@ def training():
                 current_app.logger.info("Training started successfully!")
                 data = response.json()
                 training_run_id = data.get("training_run_id")
+                # Store in session so it persists across page refreshes
+                session["training_run_id"] = training_run_id
             else:
                 current_app.logger.error(
                     f"Training failed with status {response.status_code}"
@@ -291,6 +294,30 @@ def get_training_status(run_id):
         )
 
         if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"error": "Training run not found"}), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@main_bp.route("/api/train/cancel/<run_id>", methods=["POST"])
+def cancel_training(run_id):
+    """Proxy endpoint for cancelling training from ai-trainer service"""
+    from flask import jsonify
+
+    api_url = current_app.config.get("AI_TRAINER_URL", "http://ai-trainer:5003")
+
+    try:
+        response = requests.post(
+            f"{api_url}/api/train/cancel/{run_id}",
+            timeout=5,
+        )
+
+        if response.status_code == 200:
+            # Clear from session when cancelled
+            if session.get("training_run_id") == run_id:
+                session.pop("training_run_id", None)
             return jsonify(response.json())
         else:
             return jsonify({"error": "Training run not found"}), response.status_code

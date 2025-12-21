@@ -33,7 +33,8 @@
         "eamodio.gitlens",
         "ms-vscode.makefile-tools",
         "saoudrizwan.claude-dev",
-        "docker.docker"
+        "docker.docker",
+        "ckolkman.vscode-postgres"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
