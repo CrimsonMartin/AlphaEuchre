@@ -200,18 +200,19 @@
 
                     // Update metrics
                     const currentGen = data.current_generation || 0;
-                    const totalGen = data.generations || 10;
                     const bestFitness = data.best_fitness || 0;
                     const avgFitness = data.avg_fitness || 0;
 
-                    document.getElementById('currentGen').textContent = `${currentGen}/${totalGen}`;
-                    document.getElementById('bestFitness').textContent = bestFitness.toFixed(2);
-                    document.getElementById('avgFitness').textContent = avgFitness.toFixed(2);
+                    // Show continuous mode
+                    document.getElementById('currentGen').textContent = data.continuous ? `${currentGen} (Continuous)` : currentGen;
+                    document.getElementById('bestFitness').textContent = bestFitness.toFixed(0);
+                    document.getElementById('avgFitness').textContent = avgFitness.toFixed(0);
 
-                    // Update progress bar
-                    const progress = (currentGen / totalGen) * 100;
-                    document.getElementById('progressFill').style.width = progress + '%';
-                    document.getElementById('progressText').textContent = Math.round(progress) + '%';
+                    // Update progress bar (pulse animation for continuous mode)
+                    if (data.continuous) {
+                        document.getElementById('progressFill').style.width = '100%';
+                        document.getElementById('progressText').textContent = 'Running...';
+                    }
 
                     // Add log entry for new generation
                     if (currentGen > lastGeneration) {
