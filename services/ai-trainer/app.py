@@ -131,10 +131,6 @@ def run_training(
         # Initialize genetic algorithm with 10 games per pairing
         ga = GeneticAlgorithm(
             population_size=population_size,
-            mutation_rate=0.1,
-            crossover_rate=0.7,
-            elite_size=2,
-            games_per_pairing=10,
         )
 
         # Callback to update progress

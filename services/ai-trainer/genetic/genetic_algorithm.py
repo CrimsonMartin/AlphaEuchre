@@ -52,7 +52,7 @@ class GeneticAlgorithm:
         population_size=20,
         mutation_rate=0.1,
         crossover_rate=0.7,
-        elite_size=2,
+        elite_size=3,
         games_per_pairing=10,
         num_workers=None,
         use_elo=True,
@@ -70,13 +70,17 @@ class GeneticAlgorithm:
         # ELO rating system
         self.elo_system = ELORatingSystem(initial_rating=1500, k_factor=32)
 
+        # Global champion tracking (best model across all generations)
+        self.global_best_model: BasicEuchreNN | None = None
+        self.global_best_elo: float = 0.0
+
         # Card mapping for predictions
         self.all_cards = []
         for suit in ["C", "D", "H", "S"]:
             for rank in ["9", "10", "J", "Q", "K", "A"]:
                 self.all_cards.append(f"{rank}{suit}")
 
-    def initialize_population(self, seed_models: List[BasicEuchreNN] = None):
+    def initialize_population(self, seed_models: List[BasicEuchreNN] | None = None):
         """
         Create initial population, optionally seeded with existing models.
 
@@ -222,7 +226,7 @@ class GeneticAlgorithm:
         return winning_team, team1_score, team2_score
 
     def run_round_robin_tournament_elo(
-        self, models: List[BasicEuchreNN], model_indices: List[int] = None
+        self, models: List[BasicEuchreNN], model_indices: List[int] | None = None
     ) -> Dict[int, float]:
         """
         Run round-robin tournament with 4 models using ELO ratings.
@@ -379,7 +383,10 @@ class GeneticAlgorithm:
                 param.data += noise
 
     def evolve(
-        self, generations=10, callback=None, seed_models: List[BasicEuchreNN] = None
+        self,
+        generations=10,
+        callback=None,
+        seed_models: List[BasicEuchreNN] | None = None,
     ):
         """
         Run the genetic algorithm for specified generations.
@@ -402,11 +409,6 @@ class GeneticAlgorithm:
             # Evaluate population using ELO ratings
             self.elo_ratings = self.evaluate_population_parallel()
 
-            # Print individual model ELO ratings
-            for i, elo in enumerate(self.elo_ratings):
-                desc = self.elo_system.get_rating_description(elo)
-                print(f"  Model {i+1}/{len(self.population)}: ELO = {elo:.0f} ({desc})")
-
             # Sort by ELO rating
             sorted_pop = sorted(
                 zip(self.population, self.elo_ratings),
@@ -414,21 +416,34 @@ class GeneticAlgorithm:
                 reverse=True,
             )
 
-            best_elo = sorted_pop[0][1]
+            current_best_model, current_best_elo = sorted_pop[0]
             avg_elo = sum(self.elo_ratings) / len(self.elo_ratings)
 
+            # Update global champion if current best is better
+            if current_best_elo > self.global_best_elo:
+                self.global_best_model = copy.deepcopy(current_best_model)
+                self.global_best_elo = current_best_elo
+                print(f"\n🏆 NEW GLOBAL CHAMPION! ELO: {current_best_elo:.0f}")
+
             print(f"\nGeneration {generation + 1} Summary:")
-            print(f"  Best ELO:  {best_elo:.0f}")
-            print(f"  Avg ELO:   {avg_elo:.0f}")
+            print(f"  Current Best ELO:  {current_best_elo:.0f}")
+            print(f"  Global Best ELO:   {self.global_best_elo:.0f}")
+            print(f"  Average ELO:       {avg_elo:.0f}")
 
-            # Call callback if provided
+            # Call callback if provided (use global best for tracking)
             if callback:
-                callback(generation + 1, best_elo, avg_elo)
+                callback(generation + 1, self.global_best_elo, avg_elo)
 
-            # Keep elite
-            elites = [
-                copy.deepcopy(model) for model, _ in sorted_pop[: self.elite_size]
-            ]
+            # Keep elite - ALWAYS include global champion first
+            elites = []
+            if self.global_best_model is not None:
+                elites.append(copy.deepcopy(self.global_best_model))
+                print(f"  ✓ Global champion preserved in population")
+
+            # Add remaining elites from current generation (avoid duplicates)
+            for model, elo in sorted_pop[: self.elite_size]:
+                if len(elites) < self.elite_size:
+                    elites.append(copy.deepcopy(model))
 
             # Select parents
             parents = self.selection()

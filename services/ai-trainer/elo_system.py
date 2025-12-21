@@ -137,30 +137,3 @@ class ELORatingSystem:
     def reset_ratings(self):
         """Reset all ratings to initial value."""
         self.ratings.clear()
-
-    def get_rating_description(self, rating: float) -> str:
-        """
-        Get human-readable description of rating level.
-
-        Args:
-            rating: ELO rating value
-
-        Returns:
-            Description string
-        """
-        if rating < 1000:
-            return "Beginner"
-        elif rating < 1200:
-            return "Novice"
-        elif rating < 1400:
-            return "Intermediate"
-        elif rating < 1600:
-            return "Advanced"
-        elif rating < 1800:
-            return "Expert"
-        elif rating < 2000:
-            return "Master"
-        elif rating < 2200:
-            return "Grandmaster"
-        else:
-            return "Super Grandmaster"
