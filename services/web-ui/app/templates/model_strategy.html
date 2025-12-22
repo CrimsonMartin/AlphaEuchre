@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuchreBot - Model Strategy Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .model-selector {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .model-selector select {
+            padding: 10px 15px;
+            font-size: 16px;
+            border-radius: 5px;
+            border: 1px solid #444;
+            background-color: #2a2a2a;
+            color: white;
+            min-width: 300px;
+            margin-right: 10px;
+        }
+
+        .model-selector button {
+            padding: 10px 25px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .stats-card {
+            background-color: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .stats-card h3 {
+            margin-top: 0;
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--primary-color);
+            padding-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th,
+        td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+
+        th {
+            background-color: #2a2a2a;
+            color: var(--primary-color);
+        }
+
+        tr:hover {
+            background-color: #2a2a2a;
+        }
+
+        .call-rate {
+            font-weight: bold;
+        }
+
+        .call-rate.high {
+            color: #4CAF50;
+        }
+
+        .call-rate.medium {
+            color: #FFC107;
+        }
+
+        .call-rate.low {
+            color: #f44336;
+        }
+
+        .confidence-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #2a2a2a;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            transition: width 0.3s ease;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .loading-spinner {
+            border: 4px solid #333;
+            border-top: 4px solid var(--primary-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .no-models {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .detailed-results {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .decision-call {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .decision-pass {
+            color: #f44336;
+            font-weight: bold;
+        }
+
+        .hand-cards {
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .card-C,
+        .card-S {
+            color: #333;
+            background-color: #fff;
+            padding: 2px 4px;
+            border-radius: 3px;
+            margin: 1px;
+            display: inline-block;
+        }
+
+        .card-H,
+        .card-D {
+            color: #c00;
+            background-color: #fff;
+            padding: 2px 4px;
+            border-radius: 3px;
+            margin: 1px;
+            display: inline-block;
+        }
+
+        .summary-metric {
+            display: inline-block;
+            margin: 10px 20px;
+            padding: 15px;
+            background-color: #2a2a2a;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .summary-metric .value {
+            font-size: 32px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .summary-metric .label {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .filter-controls {
+            margin: 15px 0;
+            padding: 10px;
+            background-color: #2a2a2a;
+            border-radius: 5px;
+        }
+
+        .filter-controls label {
+            margin-right: 15px;
+        }
+
+        .filter-controls select {
+            padding: 5px 10px;
+            border-radius: 3px;
+            border: 1px solid #444;
+            background-color: #1a1a1a;
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🧠 Model Strategy Analysis</h1>
+        <p>Analyze how trained AI models decide when to call trump</p>
+
+        <!-- Model Selector -->
+        <div class="model-selector">
+            <h2>Select Model to Analyze</h2>
+            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <select id="modelSelect">
+                    <option value="">-- Select a model --</option>
+                </select>
+                <button id="analyzeBtn" class="btn btn-primary" disabled>🔍 Analyze Strategy</button>
+                <span id="modelInfo" style="color: #999; margin-left: 10px;"></span>
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="loading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Analyzing model strategy... This may take a moment.</p>
+        </div>
+
+        <!-- No Models State -->
+        <div id="noModelsState" class="no-models" style="display: none;">
+            <h3>No Trained Models Found</h3>
+            <p>Train some models first using the <a href="{{ url_for('main.training') }}">AI Training</a> page.</p>
+        </div>
+
+        <!-- Results Section -->
+        <div id="resultsSection" style="display: none;">
+            <!-- Summary Metrics -->
+            <div class="stats-card" style="margin-bottom: 20px;">
+                <h3>📊 Overall Summary</h3>
+                <div style="text-align: center;">
+                    <div class="summary-metric">
+                        <div class="value" id="totalScenarios">0</div>
+                        <div class="label">Scenarios Tested</div>
+                    </div>
+                    <div class="summary-metric">
+                        <div class="value" id="overallCallRate">0%</div>
+                        <div class="label">Overall Call Rate</div>
+                    </div>
+                    <div class="summary-metric">
+                        <div class="value" id="avgConfidence">0</div>
+                        <div class="label">Avg Confidence</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <!-- Position Analysis -->
+                <div class="stats-card">
+                    <h3>🪑 Call Rate by Position</h3>
+                    <p style="color: #999; font-size: 12px;">How position relative to dealer affects calling</p>
+                    <table id="positionTable">
+                        <thead>
+                            <tr>
+                                <th>Position</th>
+                                <th>Call Rate</th>
+                                <th>Calls/Total</th>
+                                <th>Avg Confidence</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Bower Impact -->
+                <div class="stats-card">
+                    <h3>👑 Bower Impact</h3>
+                    <p style="color: #999; font-size: 12px;">How having bowers affects calling decisions</p>
+                    <table id="bowerTable">
+                        <thead>
+                            <tr>
+                                <th>Bower Status</th>
+                                <th>Call Rate</th>
+                                <th>Calls/Total</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Trump Count Analysis -->
+                <div class="stats-card">
+                    <h3>🃏 Trump Count Impact</h3>
+                    <p style="color: #999; font-size: 12px;">Minimum trump cards needed to call</p>
+                    <table id="trumpCountTable">
+                        <thead>
+                            <tr>
+                                <th>Trump Cards</th>
+                                <th>Call Rate</th>
+                                <th>Calls/Total</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <!-- Category Analysis -->
+                <div class="stats-card">
+                    <h3>📋 Hand Category Analysis</h3>
+                    <p style="color: #999; font-size: 12px;">Call rates for different hand types</p>
+                    <table id="categoryTable">
+                        <thead>
+                            <tr>
+                                <th>Hand Type</th>
+                                <th>Call Rate</th>
+                                <th>Calls/Total</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Detailed Results -->
+            <div class="stats-card" style="margin-top: 20px;">
+                <h3>📝 Detailed Scenario Results</h3>
+                <div class="filter-controls">
+                    <label>Filter by Position:
+                        <select id="filterPosition">
+                            <option value="all">All Positions</option>
+                            <option value="0">1st (Left of Dealer)</option>
+                            <option value="1">2nd</option>
+                            <option value="2">3rd</option>
+                            <option value="3">Dealer</option>
+                        </select>
+                    </label>
+                    <label>Filter by Decision:
+                        <select id="filterDecision">
+                            <option value="all">All Decisions</option>
+                            <option value="CALL">Calls Only</option>
+                            <option value="PASS">Passes Only</option>
+                        </select>
+                    </label>
+                    <label>Filter by Category:
+                        <select id="filterCategory">
+                            <option value="all">All Categories</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="detailed-results">
+                    <table id="detailedTable">
+                        <thead>
+                            <tr>
+                                <th>Hand</th>
+                                <th>Turned Up</th>
+                                <th>Position</th>
+                                <th>Decision</th>
+                                <th>Confidence</th>
+                                <th>Category</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="menu" style="margin-top: 30px;">
+            <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Back to Home</a>
+            <a href="{{ url_for('main.training') }}" class="btn btn-secondary">AI Training</a>
+        </div>
+    </div>
+
+    <script>
+        let analysisData = null;
+
+        // Load models on page load
+        document.addEventListener('DOMContentLoaded', function () {
+            loadModels();
+        });
+
+        function loadModels() {
+            fetch('/api/models')
+                .then(response => response.json())
+                .then(data => {
+                    const select = document.getElementById('modelSelect');
+                    const models = data.models || [];
+
+                    if (models.length === 0) {
+                        document.getElementById('noModelsState').style.display = 'block';
+                        return;
+                    }
+
+                    models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = `${model.name} (ELO: ${model.elo_rating}, Gen: ${model.generation})`;
+                        option.dataset.elo = model.elo_rating;
+                        option.dataset.generation = model.generation;
+                        select.appendChild(option);
+                    });
+
+                    document.getElementById('analyzeBtn').disabled = false;
+                })
+                .catch(error => {
+                    console.error('Error loading models:', error);
+                    document.getElementById('noModelsState').style.display = 'block';
+                });
+        }
+
+        document.getElementById('modelSelect').addEventListener('change', function () {
+            const selected = this.options[this.selectedIndex];
+            if (selected.value) {
+                document.getElementById('modelInfo').textContent =
+                    `ELO: ${selected.dataset.elo} | Generation: ${selected.dataset.generation}`;
+            } else {
+                document.getElementById('modelInfo').textContent = '';
+            }
+        });
+
+        document.getElementById('analyzeBtn').addEventListener('click', function () {
+            const modelId = document.getElementById('modelSelect').value;
+            if (!modelId) {
+                alert('Please select a model first');
+                return;
+            }
+
+            analyzeModel(modelId);
+        });
+
+        function analyzeModel(modelId) {
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('resultsSection').style.display = 'none';
+
+            fetch(`/api/models/${modelId}/analyze-trump`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('loadingState').style.display = 'none';
+
+                    if (data.error) {
+                        alert('Error analyzing model: ' + data.error);
+                        return;
+                    }
+
+                    analysisData = data;
+                    displayResults(data);
+                })
+                .catch(error => {
+                    document.getElementById('loadingState').style.display = 'none';
+                    console.error('Error analyzing model:', error);
+                    alert('Error analyzing model: ' + error.message);
+                });
+        }
+
+        function displayResults(data) {
+            document.getElementById('resultsSection').style.display = 'block';
+
+            // Summary metrics
+            document.getElementById('totalScenarios').textContent = data.total_scenarios;
+
+            let totalCalls = 0;
+            let totalTests = 0;
+            let totalConfidence = 0;
+
+            for (const pos in data.position_stats) {
+                totalCalls += data.position_stats[pos].calls;
+                totalTests += data.position_stats[pos].total;
+                totalConfidence += data.position_stats[pos].avg_confidence * data.position_stats[pos].total;
+            }
+
+            const overallCallRate = totalTests > 0 ? (totalCalls / totalTests * 100).toFixed(1) : 0;
+            const avgConfidence = totalTests > 0 ? (totalConfidence / totalTests).toFixed(3) : 0;
+
+            document.getElementById('overallCallRate').textContent = overallCallRate + '%';
+            document.getElementById('avgConfidence').textContent = avgConfidence;
+
+            // Position table
+            const positionBody = document.querySelector('#positionTable tbody');
+            positionBody.innerHTML = '';
+            for (const pos in data.position_stats) {
+                const stats = data.position_stats[pos];
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${stats.name}</td>
+                    <td class="call-rate ${getCallRateClass(stats.call_rate)}">${stats.call_rate || 0}%</td>
+                    <td>${stats.calls}/${stats.total}</td>
+                    <td>${stats.avg_confidence}</td>
+                `;
+                positionBody.appendChild(row);
+            }
+
+            // Bower table
+            const bowerBody = document.querySelector('#bowerTable tbody');
+            bowerBody.innerHTML = '';
+            const bowerLabels = {
+                'both_bowers': 'Both Bowers',
+                'right_only': 'Right Bower Only',
+                'left_only': 'Left Bower Only',
+                'no_bowers': 'No Bowers'
+            };
+            for (const key in data.bower_stats) {
+                const stats = data.bower_stats[key];
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${bowerLabels[key] || key}</td>
+                    <td class="call-rate ${getCallRateClass(stats.call_rate)}">${stats.call_rate || 0}%</td>
+                    <td>${stats.calls}/${stats.total}</td>
+                `;
+                bowerBody.appendChild(row);
+            }
+
+            // Trump count table
+            const trumpCountBody = document.querySelector('#trumpCountTable tbody');
+            trumpCountBody.innerHTML = '';
+            for (let i = 0; i <= 5; i++) {
+                const stats = data.trump_count_stats[String(i)];
+                if (stats && stats.total > 0) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${i} trump card${i !== 1 ? 's' : ''}</td>
+                        <td class="call-rate ${getCallRateClass(stats.call_rate)}">${stats.call_rate || 0}%</td>
+                        <td>${stats.calls}/${stats.total}</td>
+                    `;
+                    trumpCountBody.appendChild(row);
+                }
+            }
+
+            // Category table
+            const categoryBody = document.querySelector('#categoryTable tbody');
+            categoryBody.innerHTML = '';
+            const categoryLabels = {
+                'both_bowers': 'Both Bowers + Trump',
+                'right_bower': 'Right Bower + Support',
+                'right_bower_alone': 'Right Bower Alone',
+                'left_bower': 'Left Bower + Support',
+                'left_bower_weak': 'Left Bower (Weak)',
+                'no_bowers_strong': 'No Bowers (Strong)',
+                'no_bowers_medium': 'No Bowers (Medium)',
+                'weak_trump_off_aces': 'Weak Trump + Off-Aces',
+                'garbage': 'Garbage Hand',
+                'borderline': 'Borderline Hand'
+            };
+
+            // Populate category filter
+            const categoryFilter = document.getElementById('filterCategory');
+            categoryFilter.innerHTML = '<option value="all">All Categories</option>';
+
+            for (const cat in data.category_stats) {
+                const stats = data.category_stats[cat];
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${categoryLabels[cat] || cat}</td>
+                    <td class="call-rate ${getCallRateClass(stats.call_rate)}">${stats.call_rate || 0}%</td>
+                    <td>${stats.calls}/${stats.total}</td>
+                `;
+                categoryBody.appendChild(row);
+
+                // Add to filter
+                const option = document.createElement('option');
+                option.value = cat;
+                option.textContent = categoryLabels[cat] || cat;
+                categoryFilter.appendChild(option);
+            }
+
+            // Detailed results
+            displayDetailedResults(data.detailed_results);
+        }
+
+        function displayDetailedResults(results) {
+            const tbody = document.querySelector('#detailedTable tbody');
+            tbody.innerHTML = '';
+
+            const positionFilter = document.getElementById('filterPosition').value;
+            const decisionFilter = document.getElementById('filterDecision').value;
+            const categoryFilter = document.getElementById('filterCategory').value;
+
+            const filtered = results.filter(r => {
+                if (positionFilter !== 'all' && String(r.position) !== positionFilter) return false;
+                if (decisionFilter !== 'all' && r.decision !== decisionFilter) return false;
+                if (categoryFilter !== 'all' && r.category !== categoryFilter) return false;
+                return true;
+            });
+
+            filtered.forEach(result => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="hand-cards">${formatHand(result.hand)}</td>
+                    <td class="hand-cards">${formatCard(result.turned_up)}</td>
+                    <td>${result.position_name}</td>
+                    <td class="${result.decision === 'CALL' ? 'decision-call' : 'decision-pass'}">${result.decision}${result.decision === 'CALL' ? ' (' + result.called_suit + ')' : ''}</td>
+                    <td>${(result.confidence * 100).toFixed(1)}%</td>
+                    <td>${result.category}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function formatHand(hand) {
+            return hand.map(card => formatCard(card)).join(' ');
+        }
+
+        function formatCard(card) {
+            if (!card) return '';
+            const suit = card.slice(-1);
+            return `<span class="card-${suit}">${card}</span>`;
+        }
+
+        function getCallRateClass(rate) {
+            if (rate >= 70) return 'high';
+            if (rate >= 40) return 'medium';
+            return 'low';
+        }
+
+        // Filter event listeners
+        document.getElementById('filterPosition').addEventListener('change', function () {
+            if (analysisData) displayDetailedResults(analysisData.detailed_results);
+        });
+
+        document.getElementById('filterDecision').addEventListener('change', function () {
+            if (analysisData) displayDetailedResults(analysisData.detailed_results);
+        });
+
+        document.getElementById('filterCategory').addEventListener('change', function () {
+            if (analysisData) displayDetailedResults(analysisData.detailed_results);
+        });
+    </script>
+</body>
+
+</html>

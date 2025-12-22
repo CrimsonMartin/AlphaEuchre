@@ -367,3 +367,31 @@ def get_models():
     except Exception as e:
         current_app.logger.error(f"Error fetching models: {e}")
         return jsonify({"models": []}), 200
+
+
+@main_bp.route("/model-strategy")
+def model_strategy():
+    """Model strategy analysis page"""
+    return render_template("model_strategy.html")
+
+
+@main_bp.route("/api/models/<model_id>/analyze-trump", methods=["GET"])
+def analyze_trump_strategy(model_id):
+    """Proxy endpoint for analyzing model trump strategy from ai-trainer service"""
+    from flask import jsonify
+
+    api_url = current_app.config.get("AI_TRAINER_URL", "http://ai-trainer:5003")
+
+    try:
+        response = requests.get(
+            f"{api_url}/api/models/{model_id}/analyze-trump",
+            timeout=60,  # Longer timeout for analysis
+        )
+
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"error": "Analysis failed"}), response.status_code
+    except Exception as e:
+        current_app.logger.error(f"Error analyzing model strategy: {e}")
+        return jsonify({"error": str(e)}), 500

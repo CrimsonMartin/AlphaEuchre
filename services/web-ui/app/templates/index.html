@@ -1,21 +1,25 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EuchreBot - Home</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
+
 <body>
     <div class="container">
         <h1>🃏 EuchreBot</h1>
         <p>AI-Powered Euchre Simulator</p>
-        
+
         <div class="menu">
             <a href="{{ url_for('main.new_game') }}" class="btn btn-primary">New Game</a>
             <a href="{{ url_for('main.history') }}" class="btn btn-secondary">Game History</a>
             <a href="{{ url_for('main.training') }}" class="btn btn-secondary">AI Training</a>
+            <a href="{{ url_for('main.model_strategy') }}" class="btn btn-secondary">Model Strategy</a>
         </div>
     </div>
 </body>
+
 </html>
