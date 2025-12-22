@@ -3,7 +3,9 @@ services:
   # startup services in order from top to bottom
 
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: ./services/db-migrations/Dockerfile
     container_name: euchre-postgres
     environment:
       POSTGRES_DB: euchrebot
@@ -11,7 +13,6 @@ services:
       POSTGRES_PASSWORD: euchre_dev_pass
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:

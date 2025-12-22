@@ -182,15 +182,26 @@ def encode_game_state(game_state) -> np.ndarray:
     - Player's hand (24 features - one-hot for each card in deck)
     - Trump suit (4 features - one-hot)
     - Cards played in current trick (24 features)
-    - Cards played in previous tricks this hand (24 features) [NEW]
-    - Card count by position (16 features - 4 positions x 4 suits) [NEW]
+    - Cards played in previous tricks this hand (24 features)
+    - Card count by position (16 features - 4 positions x 4 suits)
     - Current player position (4 features - one-hot)
     - Team scores (2 features - normalized)
     - Tricks won this hand (2 features)
     - Dealer position (4 features - one-hot)
     - Going alone flag (1 feature)
-    - Lead suit strength (4 features - cards remaining in each suit) [NEW]
-    - Trump cards remaining estimate (1 feature) [NEW]
+    - Lead suit strength (4 features - cards remaining in each suit)
+    - Trump cards remaining estimate (1 feature)
+    - Who called trump (4 features - position one-hot)
+    - Is player on calling team (1 feature)
+    - Trump called in round 1 or 2 (1 feature)
+    - Lead suit of current trick (4 features - one-hot)
+    - Turned up card suit (4 features - one-hot)
+    - Score differential (1 feature - normalized)
+    - Is player dealer (1 feature)
+    - Cards remaining in hand (1 feature)
+    - Trump cards in own hand (1 feature)
+    - Partner already played in trick (1 feature)
+    - Lead player position (1 feature)
 
     Returns:
         Numpy array of size 130
@@ -319,6 +330,93 @@ def encode_game_state(game_state) -> np.ndarray:
         )
         trump_remaining = (6 - trump_played) / 6.0
     features.append(trump_remaining)
+
+    # Who called trump - position (4 features - one-hot) [NEW]
+    trump_caller_encoding = np.zeros(4)
+    trump_caller = game_state.get("trump_caller_position")
+    if trump_caller is not None:
+        trump_caller_encoding[trump_caller] = 1
+    features.extend(trump_caller_encoding)
+
+    # Is player on calling team (1 feature) [NEW]
+    is_calling_team = 0.0
+    if trump_caller is not None:
+        # Team 1: positions 0,2  Team 2: positions 1,3
+        player_team = position % 2
+        caller_team = trump_caller % 2
+        is_calling_team = 1.0 if player_team == caller_team else 0.0
+    features.append(is_calling_team)
+
+    # Trump called in round 1 or 2 (1 feature) [NEW]
+    trump_round = (
+        game_state.get("trump_round", 0) / 2.0
+    )  # Normalize: 0=unknown, 0.5=round1, 1.0=round2
+    features.append(trump_round)
+
+    # Lead suit of current trick (4 features - one-hot) [NEW]
+    lead_suit_encoding = np.zeros(4)
+    if game_state.get("current_trick") and game_state["current_trick"].get("cards"):
+        cards_in_trick = game_state["current_trick"]["cards"]
+        if cards_in_trick:
+            lead_card = cards_in_trick[0].get("card")
+            if lead_card and len(lead_card) >= 2:
+                lead_suit = lead_card[-1]
+                if lead_suit in suit_map:
+                    lead_suit_encoding[suit_map[lead_suit]] = 1
+    features.extend(lead_suit_encoding)
+
+    # Turned up card suit (4 features - one-hot) [NEW]
+    turned_up_encoding = np.zeros(4)
+    turned_up = game_state.get("turned_up_card")
+    if turned_up and len(turned_up) >= 2:
+        turned_up_suit = turned_up[-1]
+        if turned_up_suit in suit_map:
+            turned_up_encoding[suit_map[turned_up_suit]] = 1
+    features.extend(turned_up_encoding)
+
+    # Score differential (1 feature - normalized) [NEW]
+    score_diff = (
+        game_state.get("team1_score", 0) - game_state.get("team2_score", 0)
+    ) / 10.0
+    # Flip sign if player is on team 2
+    if position % 2 == 1:
+        score_diff = -score_diff
+    features.append(score_diff)
+
+    # Is player dealer (1 feature) [NEW]
+    is_dealer = 1.0 if position == dealer_pos else 0.0
+    features.append(is_dealer)
+
+    # Cards remaining in hand (1 feature - normalized) [NEW]
+    cards_in_hand = len(game_state.get("hand", [])) / 5.0
+    features.append(cards_in_hand)
+
+    # Trump cards in own hand (1 feature - normalized) [NEW]
+    trump_in_hand = 0.0
+    if trump_suit and "hand" in game_state:
+        trump_count = sum(
+            1 for card in game_state["hand"] if card and card[-1] == trump_suit
+        )
+        trump_in_hand = trump_count / 5.0
+    features.append(trump_in_hand)
+
+    # Partner already played in trick (1 feature) [NEW]
+    partner_played = 0.0
+    if game_state.get("current_trick") and game_state["current_trick"].get("cards"):
+        partner_position = (position + 2) % 4
+        for card_info in game_state["current_trick"]["cards"]:
+            if card_info.get("position") == partner_position:
+                partner_played = 1.0
+                break
+    features.append(partner_played)
+
+    # Lead player position (1 feature - normalized) [NEW]
+    lead_player = 0.0
+    if game_state.get("current_trick") and game_state["current_trick"].get("cards"):
+        cards_in_trick = game_state["current_trick"]["cards"]
+        if cards_in_trick:
+            lead_player = cards_in_trick[0].get("position", 0) / 3.0
+    features.append(lead_player)
 
     return np.array(features, dtype=np.float32)
 
