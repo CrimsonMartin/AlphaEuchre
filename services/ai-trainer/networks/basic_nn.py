@@ -31,6 +31,9 @@ class BasicEuchreNN(nn.Module):
     ):
         super(BasicEuchreNN, self).__init__()
 
+        # Architecture identifier
+        self.architecture_type = "basic"
+
         # Determine device (CUDA if available and requested)
         self.device = torch.device(
             "cuda" if use_cuda and torch.cuda.is_available() else "cpu"

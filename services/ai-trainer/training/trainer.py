@@ -63,6 +63,7 @@ def run_continuous_training(
         )
 
         # Initialize genetic algorithm with enhanced parameters and parallel processing
+        # Multi-architecture support with simulated annealing enabled by default
         ga = GeneticAlgorithm(
             population_size=population_size,
             mutation_rate=0.15,
@@ -73,6 +74,9 @@ def run_continuous_training(
             parallel_mode=parallel_mode,
             use_cuda=use_cuda,
         )
+
+        print(f"Multi-architecture training enabled: {ga.architecture_enabled}")
+        print(f"Simulated annealing temperature: {ga.temperature}")
 
         # Initialize population
         ga.initialize_population(seed_models)
@@ -103,16 +107,64 @@ def run_continuous_training(
             current_best_model, current_best_elo = sorted_pop[0]
             avg_elo = sum(ga.elo_ratings) / len(ga.elo_ratings)
 
+            # Track improvement for logging
+            improved = current_best_elo > ga.global_best_elo
+
             # Update global champion if current best is better
-            if current_best_elo > ga.global_best_elo:
+            if improved:
                 ga.global_best_model = copy.deepcopy(current_best_model)
                 ga.global_best_elo = current_best_elo
                 print(f"\n🏆 NEW GLOBAL CHAMPION! ELO: {current_best_elo:.0f}")
+
+                # Log architecture of champion
+                from networks.architecture_registry import ArchitectureRegistry
+
+                arch_type = ArchitectureRegistry.get_architecture_type(
+                    current_best_model
+                )
+                arch_info = ArchitectureRegistry.get_architecture_info(arch_type)
+                print(
+                    f"   Architecture: {arch_info['name']} ({arch_info['description']})"
+                )
+            else:
+                ga.generations_without_improvement += 1
+
+            # Update temperature and log
+            prev_temp = ga.temperature
+            ga.update_temperature(improved)
+            if abs(ga.temperature - prev_temp) > 0.01:
+                temp_change = "↓ cooling" if ga.temperature < prev_temp else "↑ heating"
+                print(
+                    f"  🌡️  Temperature {temp_change}: {prev_temp:.2f} → {ga.temperature:.2f}"
+                )
+
+            # Apply diversity boosts and log when they happen
+            if ga.generations_without_improvement == 5:
+                ga.mutation_rate = min(ga.base_mutation_rate * 1.5, 0.3)
+                ga.apply_diversity_boost(1)
+            elif ga.generations_without_improvement == 10:
+                ga.mutation_rate = min(ga.base_mutation_rate * 2.0, 0.4)
+                ga.apply_diversity_boost(2)
+            elif ga.generations_without_improvement >= 15:
+                ga.mutation_rate = min(ga.base_mutation_rate * 2.5, 0.5)
+                ga.apply_diversity_boost(3)
+                ga.generations_without_improvement = 0
+            elif ga.generations_without_improvement < 5:
+                ga.mutation_rate = ga.base_mutation_rate
+
+            # Update architecture statistics
+            ga.update_architecture_stats()
 
             print(f"\nGeneration {generation} Summary:")
             print(f"  Current Best ELO:  {current_best_elo:.0f}")
             print(f"  Global Best ELO:   {ga.global_best_elo:.0f}")
             print(f"  Average ELO:       {avg_elo:.0f}")
+            print(f"  Mutation Rate:     {ga.mutation_rate:.3f}")
+            print(f"  Temperature:       {ga.temperature:.2f}")
+            print(f"  Gens w/o Improve:  {ga.generations_without_improvement}")
+
+            # Print architecture distribution
+            ga.print_architecture_stats()
 
             # Update training state
             with training_lock:

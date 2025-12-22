@@ -26,6 +26,7 @@ from networks.basic_nn import (
     encode_trump_state,
     encode_discard_state,
 )
+from networks.architecture_registry import ArchitectureRegistry
 from elo_system import ELORatingSystem
 
 
@@ -107,6 +108,17 @@ class GeneticAlgorithm:
         self.generations_without_improvement = 0
         self.stagnation_threshold = 5
 
+        # Simulated Annealing parameters
+        self.temperature = 1.0  # Initial temperature
+        self.initial_temperature = 1.0
+        self.max_temperature = 1.5
+        self.cooling_rate = 0.95  # Adaptive cooling
+        self.heating_rate = 1.2  # Reheat on stagnation
+
+        # Architecture diversity tracking
+        self.architecture_enabled = True  # Enable multi-architecture support
+        self.architecture_stats = {}  # Track performance by architecture
+
         # Card mapping for predictions
         self.all_cards = []
         for suit in ["C", "D", "H", "S"]:
@@ -116,6 +128,7 @@ class GeneticAlgorithm:
     def initialize_population(self, seed_models: List[BasicEuchreNN] | None = None):
         """
         Create initial population, optionally seeded with existing models.
+        Supports multi-architecture populations.
 
         Args:
             seed_models: Optional list of models to seed the population
@@ -128,14 +141,27 @@ class GeneticAlgorithm:
                 self.population.append(copy.deepcopy(model))
 
         # Fill remaining slots with new random models
-        while len(self.population) < self.population_size:
-            self.population.append(BasicEuchreNN())
+        remaining = self.population_size - len(self.population)
+        if remaining > 0:
+            if self.architecture_enabled:
+                # Create diverse population with all architectures
+                new_models = ArchitectureRegistry.create_population(
+                    remaining, use_cuda=self.use_cuda
+                )
+                self.population.extend(new_models)
+            else:
+                # Create basic models only
+                while len(self.population) < self.population_size:
+                    self.population.append(BasicEuchreNN(use_cuda=self.use_cuda))
 
         # Initialize ELO ratings
         self.elo_system.reset_ratings()
         self.elo_ratings = [self.elo_system.initial_rating] * len(self.population)
 
         print(f"Initialized population of {len(self.population)} models")
+        if self.architecture_enabled:
+            arch_counts = ArchitectureRegistry.count_architectures(self.population)
+            print(f"  Architecture distribution: {arch_counts}")
         print(f"Using {self.num_workers} parallel workers")
         print(f"Games per pairing: {self.games_per_pairing}")
         print(f"CUDA available: {torch.cuda.is_available()}")
@@ -651,6 +677,151 @@ class GeneticAlgorithm:
                 noise = torch.randn_like(param) * 0.1
                 param.data += noise
 
+    def apply_diversity_boost(self, level: int):
+        """
+        Apply diversity-boosting mechanisms based on stagnation level.
+
+        Args:
+            level: Stagnation level (1, 2, or 3)
+        """
+        if level == 1:
+            # Level 1: Moderate intervention (5 generations stagnant)
+            print(f"  🔄 DIVERSITY BOOST LEVEL 1:")
+            print(f"     - Increasing mutation rate to {self.mutation_rate:.3f}")
+            print(f"     - Injecting 10% random immigrants")
+
+            # Add random immigrants (10% of population)
+            num_immigrants = max(1, int(self.population_size * 0.1))
+            for i in range(num_immigrants):
+                if self.architecture_enabled:
+                    # Create random model with random architecture
+                    new_model = ArchitectureRegistry.create_random_model(self.use_cuda)
+                else:
+                    new_model = BasicEuchreNN(use_cuda=self.use_cuda)
+
+                # Replace a random non-elite member
+                replace_idx = random.randint(self.elite_size, len(self.population) - 1)
+                self.population[replace_idx] = new_model
+
+        elif level == 2:
+            # Level 2: Strong intervention (10 generations stagnant)
+            print(f"  🔥 DIVERSITY BOOST LEVEL 2:")
+            print(f"     - Increasing mutation rate to {self.mutation_rate:.3f}")
+            print(f"     - Architecture switching for 25% of population")
+            print(f"     - Temperature: {self.temperature:.2f}")
+
+            # Switch architectures for 25% of population
+            if self.architecture_enabled:
+                num_to_switch = max(1, int(self.population_size * 0.25))
+                for i in range(num_to_switch):
+                    # Pick a random non-elite model
+                    idx = random.randint(self.elite_size, len(self.population) - 1)
+                    # Create new model with different architecture
+                    new_model = ArchitectureRegistry.create_random_model(self.use_cuda)
+                    self.population[idx] = new_model
+
+        elif level >= 3:
+            # Level 3: Nuclear option (15+ generations stagnant)
+            print(f"  💥 DIVERSITY BOOST LEVEL 3 (NUCLEAR):")
+            print(f"     - Keeping only top 10% elite")
+            print(f"     - Generating 50% new random models")
+            print(f"     - Resetting temperature to {self.initial_temperature}")
+
+            # Keep only top 10%
+            sorted_pop = sorted(
+                zip(self.population, self.elo_ratings),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            elite_count = max(2, int(self.population_size * 0.1))
+            elites = [copy.deepcopy(model) for model, _ in sorted_pop[:elite_count]]
+
+            # Generate 50% completely new models
+            new_count = int(self.population_size * 0.5)
+            new_models = []
+            if self.architecture_enabled:
+                # Equal distribution across architectures
+                new_models = ArchitectureRegistry.create_population(
+                    new_count, use_cuda=self.use_cuda
+                )
+            else:
+                new_models = [
+                    BasicEuchreNN(use_cuda=self.use_cuda) for _ in range(new_count)
+                ]
+
+            # Fill remaining with mutated elites
+            remaining = self.population_size - len(elites) - len(new_models)
+            mutated_elites = []
+            for _ in range(remaining):
+                parent = copy.deepcopy(random.choice(elites))
+                self.mutate(parent)
+                mutated_elites.append(parent)
+
+            # Rebuild population
+            self.population = elites + new_models + mutated_elites
+            random.shuffle(self.population)
+
+            # Reset temperature
+            self.temperature = self.initial_temperature
+
+    def update_temperature(self, improved: bool):
+        """
+        Update simulated annealing temperature based on progress.
+
+        Args:
+            improved: Whether the best model improved this generation
+        """
+        if improved:
+            # Cool down when making progress
+            self.temperature *= self.cooling_rate
+            self.temperature = max(0.1, self.temperature)  # Min temperature
+        else:
+            # Heat up when stagnating
+            self.temperature *= self.heating_rate
+            self.temperature = min(
+                self.max_temperature, self.temperature
+            )  # Max temperature
+
+    def update_architecture_stats(self):
+        """Track performance statistics by architecture type."""
+        if not self.architecture_enabled:
+            return
+
+        # Count architectures and their average ELO
+        arch_counts = ArchitectureRegistry.count_architectures(self.population)
+        arch_elos = {
+            arch: [] for arch in ArchitectureRegistry.get_available_architectures()
+        }
+
+        for model, elo in zip(self.population, self.elo_ratings):
+            arch_type = ArchitectureRegistry.get_architecture_type(model)
+            if arch_type in arch_elos:
+                arch_elos[arch_type].append(elo)
+
+        # Calculate average ELO per architecture
+        self.architecture_stats = {}
+        for arch_type in arch_elos:
+            if arch_elos[arch_type]:
+                avg_elo = sum(arch_elos[arch_type]) / len(arch_elos[arch_type])
+                self.architecture_stats[arch_type] = {
+                    "count": arch_counts.get(arch_type, 0),
+                    "avg_elo": avg_elo,
+                    "max_elo": max(arch_elos[arch_type]),
+                }
+
+    def print_architecture_stats(self):
+        """Print architecture statistics."""
+        if not self.architecture_enabled or not self.architecture_stats:
+            return
+
+        print(f"\n  Architecture Distribution:")
+        for arch_type, stats in self.architecture_stats.items():
+            arch_info = ArchitectureRegistry.get_architecture_info(arch_type)
+            print(
+                f"    {arch_info['name']:12} - Count: {stats['count']:2}, "
+                f"Avg ELO: {stats['avg_elo']:6.0f}, Max ELO: {stats['max_elo']:6.0f}"
+            )
+
     def evolve(
         self,
         generations=10,
@@ -690,7 +861,9 @@ class GeneticAlgorithm:
 
             # Update global champion if current best is better
             prev_best_elo = self.global_best_elo
-            if current_best_elo > self.global_best_elo:
+            improved = current_best_elo > self.global_best_elo
+
+            if improved:
                 self.global_best_model = copy.deepcopy(current_best_model)
                 self.global_best_elo = current_best_elo
                 self.generations_without_improvement = 0
@@ -698,21 +871,38 @@ class GeneticAlgorithm:
             else:
                 self.generations_without_improvement += 1
 
-            # Adaptive mutation: increase if stagnating
-            if self.generations_without_improvement >= self.stagnation_threshold:
+            # Update simulated annealing temperature
+            self.update_temperature(improved)
+
+            # Apply diversity boosts based on stagnation level
+            if self.generations_without_improvement == 5:
                 self.mutation_rate = min(self.base_mutation_rate * 1.5, 0.3)
-                print(
-                    f"  ⚠️  Stagnation detected! Increasing mutation rate to {self.mutation_rate:.3f}"
-                )
-            else:
+                self.apply_diversity_boost(1)
+            elif self.generations_without_improvement == 10:
+                self.mutation_rate = min(self.base_mutation_rate * 2.0, 0.4)
+                self.apply_diversity_boost(2)
+            elif self.generations_without_improvement >= 15:
+                self.mutation_rate = min(self.base_mutation_rate * 2.5, 0.5)
+                self.apply_diversity_boost(3)
+                # Reset counter after nuclear option
+                self.generations_without_improvement = 0
+            elif self.generations_without_improvement < 5:
+                # Reset mutation rate when making progress
                 self.mutation_rate = self.base_mutation_rate
+
+            # Update architecture statistics
+            self.update_architecture_stats()
 
             print(f"\nGeneration {generation + 1} Summary:")
             print(f"  Current Best ELO:  {current_best_elo:.0f}")
             print(f"  Global Best ELO:   {self.global_best_elo:.0f}")
             print(f"  Average ELO:       {avg_elo:.0f}")
             print(f"  Mutation Rate:     {self.mutation_rate:.3f}")
+            print(f"  Temperature:       {self.temperature:.2f}")
             print(f"  Gens w/o Improve:  {self.generations_without_improvement}")
+
+            # Print architecture stats
+            self.print_architecture_stats()
 
             # Call callback if provided (use global best for tracking)
             if callback:

@@ -26,7 +26,7 @@ def start_training():
 
     data = request.json
     population_size = data.get("population_size", 40)
-    games_per_pairing = data.get("games_per_pairing", 50)
+    games_per_pairing = data.get("games_per_pairing", 100)
 
     # Create training run ID
     run_id = str(uuid.uuid4())
