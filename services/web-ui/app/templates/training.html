@@ -269,10 +269,37 @@
             }
         }
 
+        // Load historical logs from database
+        function loadHistoricalLogs() {
+            if (!trainingRunId) return;
+
+            fetch(`/api/train/logs/${trainingRunId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.logs && data.logs.length > 0) {
+                        // Clear the waiting message
+                        document.getElementById('trainingLog').innerHTML = '';
+
+                        // Add all historical log entries
+                        data.logs.forEach(log => {
+                            addLogEntry(log.message, 'log-generation');
+                            lastGeneration = Math.max(lastGeneration, log.generation);
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading historical logs:', error);
+                });
+        }
+
         // Start polling if we have a training run ID
         if (trainingRunId) {
             document.getElementById('trainingStatus').style.display = 'block';
-            addLogEntry('Training started...', 'log-generation');
+
+            // Load historical logs first
+            loadHistoricalLogs();
+
+            // Then start polling for updates
             updateTrainingStatus();
             pollInterval = setInterval(updateTrainingStatus, 1000); // Poll every second
 

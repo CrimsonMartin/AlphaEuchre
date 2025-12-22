@@ -323,3 +323,47 @@ def cancel_training(run_id):
             return jsonify({"error": "Training run not found"}), response.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@main_bp.route("/api/train/logs/<run_id>", methods=["GET"])
+def get_training_logs(run_id):
+    """Proxy endpoint for getting training logs from ai-trainer service"""
+    from flask import jsonify
+
+    api_url = current_app.config.get("AI_TRAINER_URL", "http://ai-trainer:5003")
+
+    try:
+        response = requests.get(
+            f"{api_url}/api/train/logs/{run_id}",
+            timeout=5,
+        )
+
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"logs": []}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error fetching training logs: {e}")
+        return jsonify({"logs": []}), 200
+
+
+@main_bp.route("/api/models", methods=["GET"])
+def get_models():
+    """Proxy endpoint for getting available AI models from ai-trainer service"""
+    from flask import jsonify
+
+    api_url = current_app.config.get("AI_TRAINER_URL", "http://ai-trainer:5003")
+
+    try:
+        response = requests.get(
+            f"{api_url}/api/models",
+            timeout=5,
+        )
+
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({"models": []}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error fetching models: {e}")
+        return jsonify({"models": []}), 200

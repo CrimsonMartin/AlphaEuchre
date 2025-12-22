@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS training_runs (
     mutation_rate FLOAT,
     crossover_rate FLOAT,
     elite_size INTEGER,
+    best_fitness FLOAT DEFAULT 1500,
+    avg_fitness FLOAT DEFAULT 1500,
     config JSONB,
     status VARCHAR(50) DEFAULT 'running',
     started_at TIMESTAMP DEFAULT NOW(),
@@ -120,6 +122,18 @@ CREATE TABLE IF NOT EXISTS training_games (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Training logs - generation-by-generation training history
+CREATE TABLE IF NOT EXISTS training_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    training_run_id UUID REFERENCES training_runs(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL,
+    best_fitness FLOAT NOT NULL,
+    avg_fitness FLOAT NOT NULL,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(training_run_id, generation)
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
 CREATE INDEX IF NOT EXISTS idx_games_created_at ON games(created_at);
@@ -132,3 +146,4 @@ CREATE INDEX IF NOT EXISTS idx_ai_models_active ON ai_models(active);
 CREATE INDEX IF NOT EXISTS idx_ai_models_generation ON ai_models(generation);
 CREATE INDEX IF NOT EXISTS idx_training_runs_status ON training_runs(status);
 CREATE INDEX IF NOT EXISTS idx_training_games_run_id ON training_games(training_run_id);
+CREATE INDEX IF NOT EXISTS idx_training_logs_run_id ON training_logs(training_run_id);

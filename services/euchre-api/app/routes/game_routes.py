@@ -2,15 +2,43 @@
 Game management routes
 """
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 import json
 import uuid
 import random
+import requests
 from euchre_core import EuchreGame, PlayerType, Card, Suit
 from euchre_core.game import GamePhase
 from app import redis_client
 
 game_bp = Blueprint("game", __name__)
+
+
+def get_neural_net_prediction(game_state, model_id, valid_cards):
+    """Call ai-trainer service to get neural network prediction"""
+    try:
+        ai_trainer_url = current_app.config.get(
+            "AI_TRAINER_URL", "http://ai-trainer:5003"
+        )
+
+        response = requests.post(
+            f"{ai_trainer_url}/api/models/{model_id}/predict",
+            json={
+                "game_state": game_state,
+                "valid_cards": [str(card) for card in valid_cards],
+            },
+            timeout=5,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("card")
+        else:
+            print(f"Neural net prediction failed: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Error calling neural net prediction: {e}")
+        return None
 
 
 def process_ai_turns(game: EuchreGame, max_iterations=10):
@@ -87,10 +115,39 @@ def process_ai_turns(game: EuchreGame, max_iterations=10):
                 break
 
         elif game.state.phase == GamePhase.PLAYING:
-            # Playing phase - play a random valid card
+            # Playing phase - get card to play
             valid_cards = game.get_valid_moves(game.state.current_player_position)
             if valid_cards:
-                card = random.choice(valid_cards)
+                card = None
+
+                # Check if this is a neural net AI with a model ID
+                if (
+                    current_player.player_type == PlayerType.NEURAL_NET_AI
+                    and current_player.ai_model_id
+                ):
+                    # Get game state for prediction
+                    game_state = game.get_state(
+                        perspective_position=game.state.current_player_position
+                    )
+
+                    # Call neural net for prediction
+                    card_str = get_neural_net_prediction(
+                        game_state, current_player.ai_model_id, valid_cards
+                    )
+
+                    if card_str:
+                        try:
+                            card = Card.from_string(card_str)
+                            # Verify it's in valid cards
+                            if card not in valid_cards:
+                                card = None
+                        except:
+                            card = None
+
+                # Fall back to random if neural net failed or not applicable
+                if card is None:
+                    card = random.choice(valid_cards)
+
                 game.play_card(card)
                 ai_played = True
             else:
@@ -126,7 +183,12 @@ def load_game_from_redis(game_id: str) -> EuchreGame:
 
     # Restore players
     for player_data in state_dict["players"]:
-        game.add_player(player_data["name"], PlayerType[player_data["type"].upper()])
+        player = game.add_player(
+            player_data["name"], PlayerType[player_data["type"].upper()]
+        )
+        # Restore ai_model_id if present
+        if "ai_model_id" in player_data and player_data["ai_model_id"]:
+            player.ai_model_id = player_data["ai_model_id"]
 
     # Restore game state
     from euchre_core.game import GamePhase
@@ -195,13 +257,23 @@ def create_game():
         name = player_data.get("name", "Player")
         player_type_str = player_data.get("type", "human")
 
-        player_type = PlayerType.HUMAN
-        if player_type_str == "random_ai":
+        # Parse neural_net_ai:model_id format
+        model_id = None
+        if player_type_str.startswith("neural_net_ai:"):
+            player_type = PlayerType.NEURAL_NET_AI
+            model_id = player_type_str.split(":", 1)[1]
+        elif player_type_str == "random_ai":
             player_type = PlayerType.RANDOM_AI
         elif player_type_str == "neural_net_ai":
             player_type = PlayerType.NEURAL_NET_AI
+        else:
+            player_type = PlayerType.HUMAN
 
-        game.add_player(name, player_type)
+        player = game.add_player(name, player_type)
+
+        # Store model ID if this is a neural net player
+        if model_id:
+            player.ai_model_id = model_id
 
     # Start first hand
     game.start_new_hand()

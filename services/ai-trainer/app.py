@@ -137,26 +137,45 @@ def run_continuous_training(run_id: str, population_size: int):
                 training_runs[run_id]["best_fitness"] = ga.global_best_elo
                 training_runs[run_id]["avg_fitness"] = avg_elo
 
-            # Update database
+            # Update database with generation count and fitness values
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
                     """
                     UPDATE training_runs 
-                    SET generation_count = %s
+                    SET generation_count = %s, best_fitness = %s, avg_fitness = %s
                     WHERE id = %s
                 """,
-                    (generation, run_id),
+                    (generation, ga.global_best_elo, avg_elo, run_id),
                 )
+
+                # Insert training log entry
+                cur.execute(
+                    """
+                    INSERT INTO training_logs (training_run_id, generation, best_fitness, avg_fitness, message)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (training_run_id, generation) DO NOTHING
+                """,
+                    (
+                        run_id,
+                        generation,
+                        ga.global_best_elo,
+                        avg_elo,
+                        f"Generation {generation}: Best = {ga.global_best_elo:.0f}, Avg = {avg_elo:.0f}",
+                    ),
+                )
+
                 conn.commit()
                 cur.close()
                 conn.close()
             except Exception as e:
                 print(f"Error updating training run: {e}")
 
-            # Auto-save best model every 10 generations
-            if generation % 10 == 0 and ga.global_best_model is not None:
+            # Auto-save best model every 5 generations (and at generation 1)
+            if (
+                generation == 1 or generation % 5 == 0
+            ) and ga.global_best_model is not None:
                 print(f"  💾 Auto-saving best model (generation {generation})...")
                 model_manager.save_model(
                     ga.global_best_model,
@@ -273,6 +292,7 @@ def start_training():
             "avg_fitness": 1500.0,
             "started_at": datetime.now().isoformat(),
         }
+        cancellation_flags[run_id] = False  # Initialize cancellation flag
 
     # Start training in background thread
     thread = threading.Thread(
@@ -315,7 +335,7 @@ def training_status(run_id):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT status, generation_count, started_at, completed_at
+            SELECT status, generation_count, best_fitness, avg_fitness, started_at, completed_at
             FROM training_runs
             WHERE id = %s
         """,
@@ -330,14 +350,54 @@ def training_status(run_id):
                 {
                     "status": row[0],
                     "current_generation": row[1],
-                    "started_at": row[2].isoformat() if row[2] else None,
-                    "completed_at": row[3].isoformat() if row[3] else None,
+                    "best_fitness": row[2] or 1500.0,
+                    "avg_fitness": row[3] or 1500.0,
+                    "continuous": True,
+                    "started_at": row[4].isoformat() if row[4] else None,
+                    "completed_at": row[5].isoformat() if row[5] else None,
                 }
             )
     except Exception as e:
         print(f"Error fetching training status: {e}")
 
     return jsonify({"error": "Training run not found"}), 404
+
+
+@app.route("/api/train/logs/<run_id>", methods=["GET"])
+def training_logs(run_id):
+    """Get training logs for a specific run"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT generation, best_fitness, avg_fitness, message, created_at
+            FROM training_logs
+            WHERE training_run_id = %s
+            ORDER BY generation ASC
+        """,
+            (run_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        logs = []
+        for row in rows:
+            logs.append(
+                {
+                    "generation": row[0],
+                    "best_fitness": row[1],
+                    "avg_fitness": row[2],
+                    "message": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                }
+            )
+
+        return jsonify({"logs": logs})
+    except Exception as e:
+        print(f"Error fetching training logs: {e}")
+        return jsonify({"logs": []})
 
 
 @app.route("/api/models", methods=["GET"])
@@ -376,6 +436,74 @@ def list_models():
     except Exception as e:
         print(f"Error listing models: {e}")
         return jsonify({"models": []})
+
+
+@app.route("/api/models/<model_id>/predict", methods=["POST"])
+def predict_move(model_id):
+    """Predict the best move for a given game state using a trained model"""
+    try:
+        data = request.json
+        game_state = data.get("game_state")
+        valid_cards = data.get("valid_cards", [])
+
+        if not game_state:
+            return jsonify({"error": "game_state required"}), 400
+
+        # Load the model
+        model_manager = ModelManager(app.config["DATABASE_URL"])
+        model = model_manager.load_model(model_id)
+
+        if not model:
+            return jsonify({"error": "Model not found"}), 404
+
+        # Encode game state
+        from networks.basic_nn import encode_game_state
+
+        state_encoding = encode_game_state(game_state)
+
+        # Get prediction
+        card_index = model.predict_card(state_encoding)
+
+        # Map card index to actual card
+        all_cards = []
+        for suit in ["C", "D", "H", "S"]:
+            for rank in ["9", "10", "J", "Q", "K", "A"]:
+                all_cards.append(f"{rank}{suit}")
+
+        # Get predicted card
+        if 0 <= card_index < len(all_cards):
+            predicted_card = all_cards[card_index]
+
+            # If valid_cards provided, ensure prediction is valid
+            if valid_cards and predicted_card not in valid_cards:
+                # Fall back to first valid card
+                predicted_card = valid_cards[0] if valid_cards else predicted_card
+
+            return jsonify(
+                {
+                    "card": predicted_card,
+                    "model_id": model_id,
+                    "card_index": card_index,
+                }
+            )
+        else:
+            # Invalid index, return first valid card or error
+            if valid_cards:
+                return jsonify(
+                    {
+                        "card": valid_cards[0],
+                        "model_id": model_id,
+                        "fallback": True,
+                    }
+                )
+            return jsonify({"error": "Invalid prediction"}), 500
+
+    except Exception as e:
+        print(f"Error predicting move: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

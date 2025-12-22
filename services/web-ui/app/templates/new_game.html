@@ -26,7 +26,7 @@
                     <h3>Player 2</h3>
                     <input type="text" name="player1" value="Player 2" required
                         style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
-                    <select name="type1"
+                    <select name="type1" id="type1"
                         style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
                         <option value="random_ai">Random AI</option>
                         <option value="human">Human</option>
@@ -37,7 +37,7 @@
                     <h3>Player 3</h3>
                     <input type="text" name="player2" value="Player 3" required
                         style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
-                    <select name="type2"
+                    <select name="type2" id="type2"
                         style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
                         <option value="random_ai">Random AI</option>
                         <option value="human">Human</option>
@@ -48,7 +48,7 @@
                     <h3>Player 4</h3>
                     <input type="text" name="player3" value="Player 4" required
                         style="padding: 10px; width: 300px; border-radius: 5px; border: 1px solid #ccc;">
-                    <select name="type3"
+                    <select name="type3" id="type3"
                         style="padding: 10px; margin-left: 10px; border-radius: 5px; border: 1px solid #ccc;">
                         <option value="random_ai">Random AI</option>
                         <option value="human">Human</option>
@@ -63,6 +63,57 @@
             </form>
         </div>
     </div>
+
+    <script>
+        // Load available AI models on page load
+        document.addEventListener('DOMContentLoaded', function () {
+            fetch('/api/models')
+                .then(response => response.json())
+                .then(data => {
+                    const models = data.models || [];
+
+                    // Add trained models to each player dropdown
+                    ['type1', 'type2', 'type3'].forEach(selectId => {
+                        const select = document.getElementById(selectId);
+
+                        // Add separator if there are models
+                        if (models.length > 0) {
+                            const separator = document.createElement('option');
+                            separator.disabled = true;
+                            separator.textContent = '--- Trained Models ---';
+                            select.appendChild(separator);
+
+                            // Add each trained model
+                            models.forEach(model => {
+                                const option = document.createElement('option');
+                                option.value = 'neural_net_ai:' + model.id;
+                                const eloRating = model.elo_rating ? Math.round(model.elo_rating) : 1500;
+                                option.textContent = `${model.name} (ELO: ${eloRating})`;
+                                select.appendChild(option);
+                            });
+                        } else {
+                            // Add info option when no models available
+                            const infoOption = document.createElement('option');
+                            infoOption.disabled = true;
+                            infoOption.textContent = '(No trained models yet - run training first)';
+                            select.appendChild(infoOption);
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading AI models:', error);
+                    // Add error message to dropdowns
+                    ['type1', 'type2', 'type3'].forEach(selectId => {
+                        const select = document.getElementById(selectId);
+                        const errorOption = document.createElement('option');
+                        errorOption.disabled = true;
+                        errorOption.textContent = '(Error loading models - check AI trainer service)';
+                        errorOption.style.color = 'red';
+                        select.appendChild(errorOption);
+                    });
+                });
+        });
+    </script>
 </body>
 
 </html>
