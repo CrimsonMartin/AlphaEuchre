@@ -113,7 +113,7 @@ services:
       # Parallel processing configuration
       # NUM_WORKERS: Number of parallel workers (default: CPU count - 1)
       # Set higher for more parallelism, lower if you want to limit CPU usage
-      NUM_WORKERS: "6"
+      NUM_WORKERS: "4"
       # PARALLEL_MODE: "thread" (recommended), "process", or "sequential"
       # - thread: Uses ThreadPoolExecutor (best for PyTorch with GPU)
       # - process: Uses ProcessPoolExecutor (better for CPU-only, more isolation)

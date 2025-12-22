@@ -220,7 +220,7 @@
 <body>
     <div class="container">
         <h1>🧠 Model Strategy Analysis</h1>
-        <p>Analyze how trained AI models decide when to call trump</p>
+        <p>Analyze how trained AI models make decisions</p>
 
         <!-- Model Selector -->
         <div class="model-selector">
@@ -229,7 +229,8 @@
                 <select id="modelSelect">
                     <option value="">-- Select a model --</option>
                 </select>
-                <button id="analyzeBtn" class="btn btn-primary" disabled>🔍 Analyze Strategy</button>
+                <button id="analyzeTrumpBtn" class="btn btn-primary" disabled>🎺 Analyze Trump Strategy</button>
+                <button id="analyzeGameplayBtn" class="btn btn-primary" disabled>🃏 Analyze Gameplay</button>
                 <span id="modelInfo" style="color: #999; margin-left: 10px;"></span>
             </div>
         </div>
@@ -237,7 +238,7 @@
         <!-- Loading State -->
         <div id="loadingState" class="loading" style="display: none;">
             <div class="loading-spinner"></div>
-            <p>Analyzing model strategy... This may take a moment.</p>
+            <p id="loadingMessage">Analyzing model strategy... This may take a moment.</p>
         </div>
 
         <!-- No Models State -->
@@ -246,8 +247,9 @@
             <p>Train some models first using the <a href="{{ url_for('main.training') }}">AI Training</a> page.</p>
         </div>
 
-        <!-- Results Section -->
-        <div id="resultsSection" style="display: none;">
+        <!-- Trump Analysis Results Section -->
+        <div id="trumpResultsSection" style="display: none;">
+            <h2>🎺 Trump Calling Strategy Analysis</h2>
             <!-- Summary Metrics -->
             <div class="stats-card" style="margin-bottom: 20px;">
                 <h3>📊 Overall Summary</h3>
@@ -378,6 +380,61 @@
             </div>
         </div>
 
+        <!-- Gameplay Analysis Results Section -->
+        <div id="gameplayResultsSection" style="display: none;">
+            <h2>🃏 Card Playing Strategy Analysis</h2>
+
+            <!-- Summary -->
+            <div class="stats-card" style="margin-bottom: 20px;">
+                <h3>📊 Overview</h3>
+                <div style="text-align: center;">
+                    <div class="summary-metric">
+                        <div class="value" id="gameplayTotalScenarios">0</div>
+                        <div class="label">Scenarios Tested</div>
+                    </div>
+                    <div class="summary-metric">
+                        <div class="value" id="gameplayCategoryCount">0</div>
+                        <div class="label">Scenario Types</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Category Analysis -->
+            <div class="stats-card" style="margin-bottom: 20px;">
+                <h3>📋 Scenario Categories</h3>
+                <p style="color: #999; font-size: 12px;">What cards the model chooses in different situations</p>
+                <div id="gameplayCategoryContainer"></div>
+            </div>
+
+            <!-- Detailed Results -->
+            <div class="stats-card">
+                <h3>📝 Detailed Scenario Results</h3>
+                <div class="filter-controls">
+                    <label>Filter by Category:
+                        <select id="gameplayFilterCategory">
+                            <option value="all">All Categories</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="detailed-results">
+                    <table id="gameplayDetailedTable">
+                        <thead>
+                            <tr>
+                                <th>Scenario</th>
+                                <th>Hand</th>
+                                <th>Trump</th>
+                                <th>Current Trick</th>
+                                <th>Chosen Card</th>
+                                <th>Confidence</th>
+                                <th>Top 3 Choices</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div class="menu" style="margin-top: 30px;">
             <a href="{{ url_for('main.index') }}" class="btn btn-secondary">Back to Home</a>
             <a href="{{ url_for('main.training') }}" class="btn btn-secondary">AI Training</a>
@@ -412,8 +469,6 @@
                         option.dataset.generation = model.generation;
                         select.appendChild(option);
                     });
-
-                    document.getElementById('analyzeBtn').disabled = false;
                 })
                 .catch(error => {
                     console.error('Error loading models:', error);
@@ -426,24 +481,40 @@
             if (selected.value) {
                 document.getElementById('modelInfo').textContent =
                     `ELO: ${selected.dataset.elo} | Generation: ${selected.dataset.generation}`;
+                document.getElementById('analyzeTrumpBtn').disabled = false;
+                document.getElementById('analyzeGameplayBtn').disabled = false;
             } else {
                 document.getElementById('modelInfo').textContent = '';
+                document.getElementById('analyzeTrumpBtn').disabled = true;
+                document.getElementById('analyzeGameplayBtn').disabled = true;
             }
         });
 
-        document.getElementById('analyzeBtn').addEventListener('click', function () {
+        document.getElementById('analyzeTrumpBtn').addEventListener('click', function () {
             const modelId = document.getElementById('modelSelect').value;
             if (!modelId) {
                 alert('Please select a model first');
                 return;
             }
 
-            analyzeModel(modelId);
+            analyzeTrumpStrategy(modelId);
         });
 
-        function analyzeModel(modelId) {
+        document.getElementById('analyzeGameplayBtn').addEventListener('click', function () {
+            const modelId = document.getElementById('modelSelect').value;
+            if (!modelId) {
+                alert('Please select a model first');
+                return;
+            }
+
+            analyzeGameplayStrategy(modelId);
+        });
+
+        function analyzeTrumpStrategy(modelId) {
             document.getElementById('loadingState').style.display = 'block';
-            document.getElementById('resultsSection').style.display = 'none';
+            document.getElementById('loadingMessage').textContent = 'Analyzing trump calling strategy... This may take a moment.';
+            document.getElementById('trumpResultsSection').style.display = 'none';
+            document.getElementById('gameplayResultsSection').style.display = 'none';
 
             fetch(`/api/models/${modelId}/analyze-trump`)
                 .then(response => response.json())
@@ -456,7 +527,7 @@
                     }
 
                     analysisData = data;
-                    displayResults(data);
+                    displayTrumpResults(data);
                 })
                 .catch(error => {
                     document.getElementById('loadingState').style.display = 'none';
@@ -465,8 +536,33 @@
                 });
         }
 
-        function displayResults(data) {
-            document.getElementById('resultsSection').style.display = 'block';
+        function analyzeGameplayStrategy(modelId) {
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('loadingMessage').textContent = 'Analyzing card playing strategy... This may take a moment.';
+            document.getElementById('trumpResultsSection').style.display = 'none';
+            document.getElementById('gameplayResultsSection').style.display = 'none';
+
+            fetch(`/api/models/${modelId}/analyze-gameplay`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('loadingState').style.display = 'none';
+
+                    if (data.error) {
+                        alert('Error analyzing model: ' + data.error);
+                        return;
+                    }
+
+                    displayGameplayResults(data);
+                })
+                .catch(error => {
+                    document.getElementById('loadingState').style.display = 'none';
+                    console.error('Error analyzing model:', error);
+                    alert('Error analyzing model: ' + error.message);
+                });
+        }
+
+        function displayTrumpResults(data) {
+            document.getElementById('trumpResultsSection').style.display = 'block';
 
             // Summary metrics
             document.getElementById('totalScenarios').textContent = data.total_scenarios;
@@ -624,6 +720,111 @@
             return 'low';
         }
 
+        function displayGameplayResults(data) {
+            document.getElementById('gameplayResultsSection').style.display = 'block';
+
+            // Summary
+            document.getElementById('gameplayTotalScenarios').textContent = data.total_scenarios;
+            document.getElementById('gameplayCategoryCount').textContent = Object.keys(data.category_stats).length;
+
+            // Category labels
+            const categoryLabels = {
+                'opening_lead_strong_trump': 'Opening Lead - Strong Trump',
+                'opening_lead_off_aces': 'Opening Lead - Off-Aces',
+                'follow_partner_winning': 'Following Suit - Partner Winning',
+                'follow_opponent_winning': 'Following Suit - Opponent Winning',
+                'cant_follow_have_trump': "Can't Follow - Trump or Slough",
+                'lead_after_winning': 'Leading After Winning Trick',
+                'last_card_must_win': 'Last Card - Must Win',
+                'lead_all_trump': 'Leading - All Trump Hand'
+            };
+
+            // Display category stats
+            const categoryContainer = document.getElementById('gameplayCategoryContainer');
+            categoryContainer.innerHTML = '';
+
+            for (const cat in data.category_stats) {
+                const stats = data.category_stats[cat];
+                const catDiv = document.createElement('div');
+                catDiv.style.marginBottom = '20px';
+                catDiv.style.padding = '15px';
+                catDiv.style.backgroundColor = '#2a2a2a';
+                catDiv.style.borderRadius = '5px';
+
+                let html = `<h4 style="margin-top: 0; color: var(--primary-color);">${categoryLabels[cat] || cat}</h4>`;
+                html += `<p style="color: #999; font-size: 12px; margin: 5px 0;">${stats.description}</p>`;
+                html += `<p style="margin: 10px 0;"><strong>Total scenarios:</strong> ${stats.total}</p>`;
+                html += `<table style="width: 100%; margin-top: 10px;">`;
+                html += `<thead><tr><th>Card Chosen</th><th>Times Chosen</th><th>Percentage</th></tr></thead>`;
+                html += `<tbody>`;
+
+                // Sort by percentage
+                const sortedCards = Object.entries(stats.card_choices).sort((a, b) => b[1].percentage - a[1].percentage);
+
+                for (const [card, info] of sortedCards) {
+                    html += `<tr>`;
+                    html += `<td class="hand-cards">${formatCard(card)}</td>`;
+                    html += `<td>${info.count}</td>`;
+                    html += `<td><strong>${info.percentage}%</strong></td>`;
+                    html += `</tr>`;
+                }
+
+                html += `</tbody></table>`;
+                catDiv.innerHTML = html;
+                categoryContainer.appendChild(catDiv);
+            }
+
+            // Populate category filter
+            const categoryFilter = document.getElementById('gameplayFilterCategory');
+            categoryFilter.innerHTML = '<option value="all">All Categories</option>';
+            for (const cat in data.category_stats) {
+                const option = document.createElement('option');
+                option.value = cat;
+                option.textContent = categoryLabels[cat] || cat;
+                categoryFilter.appendChild(option);
+            }
+
+            // Display detailed results
+            displayGameplayDetailedResults(data.detailed_results);
+        }
+
+        function displayGameplayDetailedResults(results) {
+            const tbody = document.querySelector('#gameplayDetailedTable tbody');
+            tbody.innerHTML = '';
+
+            const categoryFilter = document.getElementById('gameplayFilterCategory').value;
+
+            const filtered = results.filter(r => {
+                if (categoryFilter !== 'all' && r.category !== categoryFilter) return false;
+                return true;
+            });
+
+            filtered.forEach(result => {
+                const row = document.createElement('tr');
+
+                // Format current trick
+                let trickDisplay = '-';
+                if (result.current_trick && result.current_trick.cards && result.current_trick.cards.length > 0) {
+                    trickDisplay = result.current_trick.cards.map(c => formatCard(c.card)).join(' ');
+                }
+
+                row.innerHTML = `
+                    <td style="max-width: 200px;">${result.description}</td>
+                    <td class="hand-cards">${formatHand(result.hand)}</td>
+                    <td class="hand-cards">${formatCard(result.trump)}</td>
+                    <td class="hand-cards">${trickDisplay}</td>
+                    <td class="hand-cards" style="font-weight: bold; font-size: 16px;">${formatCard(result.chosen_card)}</td>
+                    <td>${result.confidence}%</td>
+                    <td class="hand-cards" style="font-size: 11px;">
+                        ${result.top_3_choices.map((c, i) =>
+                    `${i + 1}. ${formatCard(c.card)} (${c.probability}%)`
+                ).join('<br>')}
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
         // Filter event listeners
         document.getElementById('filterPosition').addEventListener('change', function () {
             if (analysisData) displayDetailedResults(analysisData.detailed_results);
@@ -635,6 +836,15 @@
 
         document.getElementById('filterCategory').addEventListener('change', function () {
             if (analysisData) displayDetailedResults(analysisData.detailed_results);
+        });
+
+        document.getElementById('gameplayFilterCategory').addEventListener('change', function () {
+            // Re-fetch or use cached data
+            const modelId = document.getElementById('modelSelect').value;
+            if (modelId) {
+                // For now, just filter the displayed results
+                // In a real app, you might want to cache the full results
+            }
         });
     </script>
 </body>
