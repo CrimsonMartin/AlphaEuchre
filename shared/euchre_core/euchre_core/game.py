@@ -66,6 +66,8 @@ class GameState:
         if len(self.players) == 4:
             self.phase = GamePhase.DEALING
 
+        return player
+
     def get_player(self, position: int) -> Player:
         """Get player at a specific position"""
         return self.players[position]
@@ -137,7 +139,7 @@ class EuchreGame:
 
     def add_player(self, name: str, player_type: PlayerType = PlayerType.HUMAN):
         """Add a player to the game"""
-        self.state.add_player(name, player_type)
+        return self.state.add_player(name, player_type)
 
     def start_new_hand(self):
         """Start a new hand of Euchre"""
