@@ -29,13 +29,13 @@ jobs:
     
     - name: Build and start postgres container
       run: |
-        docker-compose build postgres
-        docker-compose up -d postgres
+        docker compose build postgres
+        docker compose up -d postgres
     
     - name: Wait for postgres to be healthy
       run: |
         echo "Waiting for postgres to be healthy..."
-        timeout 60 bash -c 'until docker-compose exec -T postgres pg_isready -U euchre -d euchrebot; do sleep 2; done'
+        timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U euchre -d euchrebot; do sleep 2; done'
         echo "Postgres is ready!"
     
     - name: Verify all 10 tables are created
@@ -43,14 +43,14 @@ jobs:
         echo "Checking database tables..."
         
         # Get table count
-        TABLE_COUNT=$(docker-compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
+        TABLE_COUNT=$(docker compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
         TABLE_COUNT=$(echo $TABLE_COUNT | tr -d ' ')
         
         echo "Found $TABLE_COUNT tables"
         
         if [ "$TABLE_COUNT" -ne "10" ]; then
           echo "ERROR: Expected 10 tables, found $TABLE_COUNT"
-          docker-compose exec -T postgres psql -U euchre -d euchrebot -c "\dt"
+          docker compose exec -T postgres psql -U euchre -d euchrebot -c "\dt"
           exit 1
         fi
         
@@ -74,7 +74,7 @@ jobs:
         echo "Verifying required tables..."
         
         for table in "${REQUIRED_TABLES[@]}"; do
-          EXISTS=$(docker-compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '$table');")
+          EXISTS=$(docker compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '$table');")
           EXISTS=$(echo $EXISTS | tr -d ' ')
           
           if [ "$EXISTS" != "t" ]; then
@@ -104,7 +104,7 @@ jobs:
         )
         
         for column in "${REQUIRED_COLUMNS[@]}"; do
-          EXISTS=$(docker-compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'ai_models' AND column_name = '$column');")
+          EXISTS=$(docker compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'ai_models' AND column_name = '$column');")
           EXISTS=$(echo $EXISTS | tr -d ' ')
           
           if [ "$EXISTS" != "t" ]; then
@@ -121,7 +121,7 @@ jobs:
       run: |
         echo "Verifying indexes..."
         
-        INDEX_COUNT=$(docker-compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public';")
+        INDEX_COUNT=$(docker compose exec -T postgres psql -U euchre -d euchrebot -t -c "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public';")
         INDEX_COUNT=$(echo $INDEX_COUNT | tr -d ' ')
         
         echo "Found $INDEX_COUNT indexes"
@@ -129,7 +129,7 @@ jobs:
         # We expect at least 12 indexes (10 primary keys + custom indexes)
         if [ "$INDEX_COUNT" -lt "12" ]; then
           echo "WARNING: Expected at least 12 indexes, found $INDEX_COUNT"
-          docker-compose exec -T postgres psql -U euchre -d euchrebot -c "SELECT indexname FROM pg_indexes WHERE schemaname = 'public';"
+          docker compose exec -T postgres psql -U euchre -d euchrebot -c "SELECT indexname FROM pg_indexes WHERE schemaname = 'public';"
         fi
         
         echo "✓ Index verification complete"
@@ -138,12 +138,12 @@ jobs:
       if: always()
       run: |
         echo "=== Database Summary ==="
-        docker-compose exec -T postgres psql -U euchre -d euchrebot -c "\dt" || true
+        docker compose exec -T postgres psql -U euchre -d euchrebot -c "\dt" || true
         echo ""
         echo "=== Postgres Logs ==="
-        docker-compose logs postgres | tail -50 || true
+        docker compose logs postgres | tail -50 || true
     
     - name: Cleanup
       if: always()
       run: |
-        docker-compose down -v
+        docker compose down -v
