@@ -85,7 +85,7 @@ class GeneticAlgorithm:
         self.crossover_rate = crossover_rate
         self.elite_size = elite_size
         self.games_per_pairing = games_per_pairing
-        self.num_workers = num_workers or max(1, multiprocessing.cpu_count() - 1)
+        self.num_workers = num_workers or max(1, multiprocessing.cpu_count())
         self.use_elo = use_elo
         self.parallel_mode = parallel_mode
         self.population: List[BasicEuchreNN] = []
