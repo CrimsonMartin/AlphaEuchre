@@ -182,6 +182,248 @@ class GeneticAlgorithm:
         print(f"Games per pairing: {self.games_per_pairing}")
         print(f"CUDA available: {torch.cuda.is_available()}")
 
+    def play_single_hand(
+        self,
+        models: List[BasicEuchreNN],
+        model_indices: List[int],
+    ) -> Dict:
+        """
+        Play a single hand (5 tricks) with specified models.
+        Track individual trick winners for per-model rewards.
+
+        Args:
+            models: List of 4 models (positions 0-3)
+            model_indices: List of 4 model indices in population
+
+        Returns:
+            Dictionary with hand results:
+            - tricks_won: Dict[model_index -> number of tricks won (0-5)]
+            - trump_caller_position: Position who called trump (0-3)
+            - trump_caller_index: Model index who called trump
+            - calling_team_won: Whether calling team got >=3 tricks
+            - team1_tricks: Tricks won by team 1 (positions 0,2)
+            - team2_tricks: Tricks won by team 2 (positions 1,3)
+        """
+        # Create game
+        game = EuchreGame(f"training-hand-{random.randint(1000, 9999)}")
+
+        # Add players (all AI for training)
+        for i in range(4):
+            game.add_player(f"Player{i}", PlayerType.RANDOM_AI)
+
+        # Track results
+        trump_caller_position = None
+        tricks_won_by_position = {0: 0, 1: 0, 2: 0, 3: 0}
+
+        # Start hand
+        game.start_new_hand()
+
+        # Play until hand complete
+        while game.state.phase not in [GamePhase.HAND_COMPLETE, GamePhase.GAME_OVER]:
+            current_pos = game.state.current_player_position
+            current_model = models[current_pos]
+
+            # Handle different game phases
+            if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
+                # Use neural network for trump selection (Round 1)
+                game_state_dict = game.get_state(perspective_position=current_pos)
+                turned_up_card = (
+                    str(game.state.turned_up_card)
+                    if game.state.turned_up_card
+                    else None
+                )
+                trump_state = encode_trump_state(game_state_dict, turned_up_card)
+                decision_idx = current_model.predict_trump_decision(trump_state)
+
+                if decision_idx == 4:
+                    # Model wants to pass
+                    try:
+                        game.pass_trump()
+                    except:
+                        # Dealer must call
+                        if game.state.turned_up_card:
+                            game.call_trump(game.state.turned_up_card.suit)
+                            trump_caller_position = current_pos
+                else:
+                    # Model wants to call
+                    try:
+                        if game.state.turned_up_card:
+                            game.call_trump(game.state.turned_up_card.suit)
+                            trump_caller_position = current_pos
+                    except:
+                        try:
+                            game.pass_trump()
+                        except:
+                            if game.state.turned_up_card:
+                                game.call_trump(game.state.turned_up_card.suit)
+                                trump_caller_position = current_pos
+
+            elif game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
+                # Use neural network for trump selection (Round 2)
+                game_state_dict = game.get_state(perspective_position=current_pos)
+                turned_up_card = (
+                    str(game.state.turned_up_card)
+                    if game.state.turned_up_card
+                    else None
+                )
+                trump_state = encode_trump_state(game_state_dict, turned_up_card)
+                decision_idx = current_model.predict_trump_decision(trump_state)
+
+                turned_up_suit = (
+                    game.state.turned_up_card.suit
+                    if game.state.turned_up_card
+                    else Suit.CLUBS
+                )
+                is_dealer = (
+                    game.state.current_player_position == game.state.dealer_position
+                )
+
+                if decision_idx == 4:
+                    # Try to pass
+                    if is_dealer:
+                        available_suits = [
+                            s
+                            for s in [
+                                Suit.CLUBS,
+                                Suit.DIAMONDS,
+                                Suit.HEARTS,
+                                Suit.SPADES,
+                            ]
+                            if s != turned_up_suit
+                        ]
+                        game.call_trump(random.choice(available_suits))
+                        trump_caller_position = current_pos
+                    else:
+                        try:
+                            game.pass_trump()
+                        except:
+                            available_suits = [
+                                s
+                                for s in [
+                                    Suit.CLUBS,
+                                    Suit.DIAMONDS,
+                                    Suit.HEARTS,
+                                    Suit.SPADES,
+                                ]
+                                if s != turned_up_suit
+                            ]
+                            game.call_trump(random.choice(available_suits))
+                            trump_caller_position = current_pos
+                else:
+                    # Call the selected suit
+                    suit_map = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
+                    selected_suit = suit_map[decision_idx]
+
+                    if selected_suit != turned_up_suit:
+                        game.call_trump(selected_suit)
+                        trump_caller_position = current_pos
+                    else:
+                        available_suits = [
+                            s
+                            for s in [
+                                Suit.CLUBS,
+                                Suit.DIAMONDS,
+                                Suit.HEARTS,
+                                Suit.SPADES,
+                            ]
+                            if s != turned_up_suit
+                        ]
+                        if is_dealer:
+                            game.call_trump(random.choice(available_suits))
+                            trump_caller_position = current_pos
+                        else:
+                            try:
+                                game.pass_trump()
+                            except:
+                                game.call_trump(random.choice(available_suits))
+                                trump_caller_position = current_pos
+
+            elif game.state.phase == GamePhase.DEALER_DISCARD:
+                # Use neural network for dealer discard
+                dealer = game.state.get_player(game.state.dealer_position)
+                game_state_dict = game.get_state(
+                    perspective_position=game.state.dealer_position
+                )
+                hand_with_pickup = [str(card) for card in dealer.hand]
+                discard_state = encode_discard_state(game_state_dict, hand_with_pickup)
+                card_idx = current_model.predict_discard(discard_state)
+
+                if card_idx < len(self.all_cards):
+                    predicted_card_str = self.all_cards[card_idx]
+                    card_to_discard = None
+                    for card in dealer.hand:
+                        if str(card) == predicted_card_str:
+                            card_to_discard = card
+                            break
+                    if card_to_discard is None:
+                        card_to_discard = dealer.hand[0]
+                else:
+                    card_to_discard = dealer.hand[0]
+
+                game.dealer_discard(card_to_discard)
+
+            elif game.state.phase == GamePhase.PLAYING:
+                # Use neural network to select card
+                game_state_dict = game.get_state(perspective_position=current_pos)
+                state_encoding = encode_game_state(game_state_dict)
+                valid_cards = game.get_valid_moves(current_pos)
+
+                if valid_cards:
+                    card_idx = current_model.predict_card(state_encoding)
+                    predicted_card_str = (
+                        self.all_cards[card_idx]
+                        if card_idx < len(self.all_cards)
+                        else None
+                    )
+
+                    selected_card = None
+                    if predicted_card_str:
+                        for card in valid_cards:
+                            if str(card) == predicted_card_str:
+                                selected_card = card
+                                break
+
+                    if selected_card is None:
+                        selected_card = valid_cards[0]
+
+                    result = game.play_card(selected_card)
+
+                    # Track trick winner
+                    if result.get("trick_complete"):
+                        winner_pos = result["trick_winner"]
+                        tricks_won_by_position[winner_pos] += 1
+
+        # Calculate final results
+        team1_tricks = tricks_won_by_position[0] + tricks_won_by_position[2]
+        team2_tricks = tricks_won_by_position[1] + tricks_won_by_position[3]
+
+        # Determine if calling team won (>=3 tricks)
+        calling_team = None
+        calling_team_won = False
+        if trump_caller_position is not None:
+            calling_team = 1 if trump_caller_position in [0, 2] else 2
+            calling_team_won = (calling_team == 1 and team1_tricks >= 3) or (
+                calling_team == 2 and team2_tricks >= 3
+            )
+
+        # Map position tricks to model index tricks
+        tricks_won_by_index = {
+            model_indices[pos]: tricks_won_by_position[pos] for pos in range(4)
+        }
+
+        trump_caller_index = None
+        if trump_caller_position is not None:
+            trump_caller_index = model_indices[trump_caller_position]
+
+        return {
+            "tricks_won": tricks_won_by_index,
+            "trump_caller_position": trump_caller_position,
+            "trump_caller_index": trump_caller_index,
+            "calling_team_won": calling_team_won,
+            "team1_tricks": team1_tricks,
+            "team2_tricks": team2_tricks,
+        }
+
     def play_game_with_teams(
         self,
         team1_models: Tuple[BasicEuchreNN, BasicEuchreNN],
@@ -606,6 +848,61 @@ class GeneticAlgorithm:
 
         return elo_changes
 
+    def run_round_robin_hand_based(
+        self, models: List[BasicEuchreNN], model_indices: List[int] | None = None
+    ) -> Dict[int, float]:
+        """
+        Run round-robin hands (not full games) with 4 models using individual trick-based ELO.
+
+        This is MUCH faster than full games and rewards individual performance directly.
+
+        Team pairings:
+        - Round 1: (A+B) vs (C+D)
+        - Round 2: (A+C) vs (B+D)
+        - Round 3: (A+D) vs (B+C)
+
+        Args:
+            models: List of exactly 4 models
+            model_indices: Optional list of indices in population (for ELO tracking)
+
+        Returns:
+            Dictionary of model_index -> ELO rating change
+        """
+        if len(models) != 4:
+            raise ValueError("Round-robin tournament requires exactly 4 models")
+
+        if model_indices is None:
+            model_indices = list(range(4))
+
+        # Track ELO changes
+        elo_changes = {idx: 0.0 for idx in model_indices}
+
+        # Play hands directly (no team pairings needed - all 4 play each hand)
+        # Use same number as games_per_pairing but these are hands, not full games
+        for hand_num in range(self.games_per_pairing):
+            # Play a single hand with all 4 models
+            hand_result = self.play_single_hand(models, model_indices)
+
+            tricks_won = hand_result["tricks_won"]
+            trump_caller_index = hand_result["trump_caller_index"]
+            calling_team_won = hand_result["calling_team_won"]
+
+            # Update individual ratings based on tricks won
+            updated_ratings = self.elo_system.update_individual_ratings(
+                model_indices,
+                tricks_won,
+                trump_caller_index=trump_caller_index,
+                calling_team_won=calling_team_won,
+            )
+
+            # Track changes
+            for idx in model_indices:
+                elo_changes[idx] = (
+                    self.elo_system.get_rating(idx) - self.elo_system.initial_rating
+                )
+
+        return elo_changes
+
     def evaluate_population_parallel(self) -> List[float]:
         """
         Evaluate entire population using parallel tournament groups.
@@ -653,12 +950,12 @@ class GeneticAlgorithm:
         print(f"Parallel mode: {self.parallel_mode}, CUDA enabled: {self.use_cuda}")
 
         if self.parallel_mode == "sequential" or self.num_workers <= 1:
-            # Sequential execution (original behavior)
+            # Sequential execution - use hand-based evaluation
             for group_idx, (group_models, group_indices) in enumerate(groups):
                 print(
-                    f"  Group {group_idx + 1}/{len(groups)}: {self.games_per_pairing * 3} games per model"
+                    f"  Group {group_idx + 1}/{len(groups)}: {self.games_per_pairing} hands per group (individual trick rewards)"
                 )
-                self.run_round_robin_tournament_elo(group_models, group_indices)
+                self.run_round_robin_hand_based(group_models, group_indices)
         elif self.parallel_mode == "thread":
             # Thread-based parallelism (recommended for PyTorch)
             # This avoids the overhead of serializing models for multiprocessing
@@ -696,8 +993,8 @@ class GeneticAlgorithm:
             for idx in group_indices:
                 ga_temp.elo_system.ratings[idx] = ga_temp.elo_system.initial_rating
 
-            # Run round-robin tournament
-            ga_temp.run_round_robin_tournament_elo(group_models, group_indices)
+            # Run round-robin hand-based evaluation (INDIVIDUAL TRICK REWARDS)
+            ga_temp.run_round_robin_hand_based(group_models, group_indices)
 
             # Collect results
             results = {idx: ga_temp.elo_system.get_rating(idx) for idx in group_indices}

@@ -2,7 +2,7 @@
 ELO Rating System for AI Model Evaluation
 """
 
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 import math
 
 
@@ -141,3 +141,60 @@ class ELORatingSystem:
     def get_rating_description(self, elo: float) -> str:
         """Get a textual description of the rating."""
         return f"Rating: {elo:.2f}"
+
+    def update_individual_ratings(
+        self,
+        player_indices: List[int],
+        tricks_won: Dict[int, int],
+        trump_caller_index: Optional[int] = None,
+        calling_team_won: bool = False,
+    ) -> Dict[int, float]:
+        """
+        Update ratings based on individual trick performance.
+
+        This replaces team-based win/loss with individual trick-based rewards.
+        Models are rewarded for the number of tricks they personally won.
+
+        Args:
+            player_indices: List of 4 model indices in the hand
+            tricks_won: Dictionary of player_index -> number of tricks won (0-5)
+            trump_caller_index: Optional index of player who called trump
+            calling_team_won: Whether the team that called trump won the hand (>=3 tricks)
+
+        Returns:
+            Dictionary of model_index -> new_rating for all participants
+        """
+        updated_ratings = {}
+
+        # Calculate expected performance (should average 1.25 tricks per player)
+        # but we'll use relative comparisons instead
+
+        for idx in player_indices:
+            old_rating = self.get_rating(idx)
+            player_tricks = tricks_won.get(idx, 0)
+
+            # Base rating change: proportional to tricks won
+            # Scale from -K to +K based on 0-5 tricks
+            # 0 tricks = big loss, 5 tricks = big gain, ~1-2 tricks = neutral
+            normalized_performance = (
+                player_tricks / 5.0
+            ) * 2.0 - 0.5  # maps 0->-0.5, 5->1.5, 2.5->0.5
+            base_change = self.k_factor * normalized_performance
+
+            # Apply trump calling modifiers
+            modifier = 1.0
+            if trump_caller_index is not None and idx == trump_caller_index:
+                if calling_team_won:
+                    # Reward aggressive successful trump calls
+                    modifier = 1.4  # 40% bonus
+                else:
+                    # Penalty for bad calls, but not too harsh to encourage trying
+                    modifier = 0.6  # 40% penalty
+
+            rating_change = base_change * modifier
+            new_rating = old_rating + rating_change
+
+            self.ratings[idx] = new_rating
+            updated_ratings[idx] = new_rating
+
+        return updated_ratings
