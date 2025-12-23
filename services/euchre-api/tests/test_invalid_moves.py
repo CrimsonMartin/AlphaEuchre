@@ -219,7 +219,16 @@ class TestInvalidTrumpCalls:
             turned_up_suit = turned_up_card[-1]
 
             # Try to call a different suit in round 1
-            wrong_suits = {"H": "D", "D": "H", "C": "S", "S": "C"}
+            wrong_suits = {
+                "H": "D",
+                "D": "H",
+                "C": "S",
+                "S": "C",
+                "♥": "D",
+                "♦": "H",
+                "♣": "S",
+                "♠": "C",
+            }
             wrong_suit = wrong_suits.get(turned_up_suit, "H")
 
             response = client.post(
