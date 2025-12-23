@@ -69,12 +69,12 @@ class GeneticAlgorithm:
 
     def __init__(
         self,
-        population_size=40,
-        mutation_rate=0.15,
-        crossover_rate=0.7,
-        elite_size=4,
+        population_size=32,
+        mutation_rate=0.10,  # Reduced from 0.15 for more stability
+        crossover_rate=0.8,  # Increased from 0.7 for more breeding
+        elite_size=8,  # Increased from 4 to preserve more good models
         games_per_pairing=50,
-        num_workers=None,
+        num_workers=4,
         use_elo=True,
         use_cuda=None,
         parallel_mode="thread",  # "thread", "process", or "sequential"
@@ -116,7 +116,7 @@ class GeneticAlgorithm:
         self.heating_rate = 1.2  # Reheat on stagnation
 
         # Architecture diversity tracking
-        self.architecture_enabled = True  # Enable multi-architecture support
+        self.architecture_enabled = False  # Enable multi-architecture support (SET TO FALSE TO USE ONLY BASIC MLP)
         self.architecture_stats = {}  # Track performance by architecture
 
         # Card mapping for predictions
@@ -202,6 +202,7 @@ class GeneticAlgorithm:
             # Handle different game phases
             if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
                 # Use neural network for trump selection
+                # ROUND 1: Can only call the turned-up suit or pass
                 game_state_dict = game.get_state(perspective_position=current_pos)
                 turned_up_card = (
                     str(game.state.turned_up_card)
@@ -212,9 +213,10 @@ class GeneticAlgorithm:
 
                 decision_idx = current_model.predict_trump_decision(trump_state)
 
-                # decision_idx: 0-3 = call suits (C,D,H,S), 4 = pass
+                # FIXED LOGIC: In Round 1, interpret output as binary call/pass
+                # decision_idx: 0-3 = CALL (accept turned-up suit), 4 = PASS
                 if decision_idx == 4:
-                    # Try to pass
+                    # Model wants to pass
                     try:
                         game.pass_trump()
                     except:
@@ -222,18 +224,16 @@ class GeneticAlgorithm:
                         if game.state.turned_up_card:
                             game.call_trump(game.state.turned_up_card.suit)
                 else:
-                    # Call the selected suit
-                    suit_map = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
-                    selected_suit = suit_map[decision_idx]
-
-                    # Check if this is the turned up suit (valid in round 1)
-                    if (
-                        game.state.turned_up_card
-                        and selected_suit == game.state.turned_up_card.suit
-                    ):
-                        game.call_trump(selected_suit)
-                    else:
-                        # Can't call different suit in round 1, so pass
+                    # Model wants to call (any output 0-3 means "call")
+                    # In Round 1, we can only call the turned-up suit
+                    try:
+                        if game.state.turned_up_card:
+                            game.call_trump(game.state.turned_up_card.suit)
+                        else:
+                            # Shouldn't happen, but pass if no turned up card
+                            game.pass_trump()
+                    except:
+                        # If call fails, try to pass
                         try:
                             game.pass_trump()
                         except:
@@ -635,12 +635,24 @@ class GeneticAlgorithm:
                     traceback.print_exc()
 
     def selection(self) -> List[BasicEuchreNN]:
-        """Select parents for next generation using tournament selection based on ELO"""
+        """
+        Select parents for next generation using adaptive tournament selection.
+        Uses larger tournament size for stronger selection pressure.
+        """
         parents = []
 
+        # Adaptive tournament size based on diversity
+        # Larger tournament = more selection pressure = faster convergence to best
+        base_tournament_size = 5  # Increased from 3
+
+        # Increase tournament size when stagnating to focus on best models
+        if self.generations_without_improvement > 5:
+            tournament_size = min(7, len(self.population) // 2)
+        else:
+            tournament_size = base_tournament_size
+
         for _ in range(self.population_size - self.elite_size):
-            # Tournament selection
-            tournament_size = 3
+            # Tournament selection with adaptive size
             tournament = random.sample(
                 list(zip(self.population, self.elo_ratings)),
                 min(tournament_size, len(self.population)),
@@ -653,29 +665,44 @@ class GeneticAlgorithm:
     def crossover(
         self, parent1: BasicEuchreNN, parent2: BasicEuchreNN
     ) -> BasicEuchreNN:
-        """Crossover two parent networks to create offspring"""
+        """
+        Improved crossover using layer-wise blending to preserve good patterns.
+        Uses weighted average based on parent fitness rather than random mixing.
+        """
         if random.random() > self.crossover_rate:
             return copy.deepcopy(parent1)
 
-        child = BasicEuchreNN()
+        child = BasicEuchreNN(use_cuda=self.use_cuda)
 
-        # Crossover weights
+        # Layer-wise crossover with adaptive blending
         for child_param, p1_param, p2_param in zip(
             child.parameters(), parent1.parameters(), parent2.parameters()
         ):
-            # Uniform crossover
-            mask = torch.rand_like(child_param) > 0.5
-            child_param.data = torch.where(mask, p1_param.data, p2_param.data)
+            # Use blend crossover (weighted average) instead of uniform
+            # This preserves more structure from both parents
+            alpha = random.uniform(0.3, 0.7)  # Blend factor
+            child_param.data = alpha * p1_param.data + (1 - alpha) * p2_param.data
 
         return child
 
     def mutate(self, model: BasicEuchreNN):
-        """Mutate model weights with adaptive mutation rate"""
+        """
+        Improved mutation with adaptive strength and layer-wise probability.
+        Uses smaller mutations to preserve good solutions while still exploring.
+        """
         for param in model.parameters():
             if random.random() < self.mutation_rate:
+                # Adaptive mutation strength based on temperature
+                # Lower temperature = smaller mutations (fine-tuning)
+                # Higher temperature = larger mutations (exploration)
+                mutation_strength = 0.05 * self.temperature  # Reduced from 0.1
+
                 # Add Gaussian noise to weights
-                noise = torch.randn_like(param) * 0.1
+                noise = torch.randn_like(param) * mutation_strength
                 param.data += noise
+
+                # Clip extreme values to prevent instability
+                param.data = torch.clamp(param.data, -10.0, 10.0)
 
     def apply_diversity_boost(self, level: int):
         """

@@ -89,6 +89,23 @@ def run_continuous_training(
             print(f"Generation {generation} (Continuous Mode)")
             print(f"{'='*60}")
 
+            # Check if another instance found a better model (multi-instance training)
+            db_best = model_manager.get_current_best_model()
+            if db_best is not None:
+                db_model_id, db_model, db_elo = db_best
+                if db_elo > ga.global_best_elo:
+                    print(
+                        f"🔄 Another instance found better model! ELO: {ga.global_best_elo:.0f} → {db_elo:.0f}"
+                    )
+                    ga.global_best_model = copy.deepcopy(db_model)
+                    ga.global_best_elo = db_elo
+                    ga.generations_without_improvement = 0  # Reset stagnation counter
+
+                    # Replace worst model in population with the new champion
+                    if len(ga.population) > 0:
+                        ga.population[-1] = copy.deepcopy(db_model)
+                        print(f"  ✓ Updated population with new global champion")
+
             # Evaluate population
             ga.elo_ratings = ga.evaluate_population_parallel()
 
@@ -208,11 +225,12 @@ def run_continuous_training(
                 print(f"Error updating training run: {e}")
 
             # Auto-save best model every 5 generations (and at generation 1)
+            # Use save_model_with_lock for multi-instance coordination
             if (
                 generation == 1 or generation % 5 == 0
             ) and ga.global_best_model is not None:
                 print(f"  💾 Auto-saving best model (generation {generation})...")
-                model_manager.save_model(
+                model_manager.save_model_with_lock(
                     ga.global_best_model,
                     f"AutoSave-Gen{generation}",
                     generation,
@@ -253,9 +271,10 @@ def run_continuous_training(
         print(f"\n⚠️  Training cancelled at generation {generation}")
 
         # Save final best model
+        # Use save_model_with_lock for multi-instance coordination
         if ga.global_best_model is not None:
             print(f"  💾 Saving final best model...")
-            model_id = model_manager.save_model(
+            model_id = model_manager.save_model_with_lock(
                 ga.global_best_model,
                 f"FinalBest-Gen{generation}",
                 generation,
@@ -265,8 +284,9 @@ def run_continuous_training(
                 elo_rating=ga.global_best_elo,
             )
 
-            with training_lock:
-                training_runs[run_id]["best_model_id"] = model_id
+            if model_id:
+                with training_lock:
+                    training_runs[run_id]["best_model_id"] = model_id
 
         # Mark as completed
         with training_lock:

@@ -20,10 +20,10 @@ class BasicEuchreNN(nn.Module):
 
     def __init__(
         self,
-        input_size=130,
-        card_hidden_sizes=[256, 128, 64],
-        trump_hidden_sizes=[128, 64],
-        discard_hidden_sizes=[64],
+        input_size=161,  # Increased from 130 to 161 with enhanced features
+        card_hidden_sizes=[512, 256, 128, 64],  # Increased from [256, 128, 64]
+        trump_hidden_sizes=[256, 128, 64],  # Increased from [128, 64]
+        discard_hidden_sizes=[128, 64],  # Increased from [64]
         card_output_size=24,
         trump_output_size=5,  # 4 suits + pass
         discard_output_size=24,
@@ -45,7 +45,7 @@ class BasicEuchreNN(nn.Module):
         for hidden_size in card_hidden_sizes:
             card_layers.append(nn.Linear(prev_size, hidden_size))
             card_layers.append(nn.ReLU())
-            card_layers.append(nn.Dropout(0.1))  # Add dropout for regularization
+            card_layers.append(nn.Dropout(0.15))  # Increased from 0.1 for larger model
             prev_size = hidden_size
         card_layers.append(nn.Linear(prev_size, card_output_size))
         self.card_network = nn.Sequential(*card_layers)
@@ -179,9 +179,9 @@ def encode_game_state(game_state) -> np.ndarray:
     """
     Encode a game state into a feature vector for neural network input.
 
-    Enhanced encoding with card memory and position tracking.
+    Enhanced encoding with card memory, position tracking, and strategic features.
 
-    Features (130 total):
+    Features (161 total):
     - Player's hand (24 features - one-hot for each card in deck)
     - Trump suit (4 features - one-hot)
     - Cards played in current trick (24 features)
@@ -205,9 +205,13 @@ def encode_game_state(game_state) -> np.ndarray:
     - Trump cards in own hand (1 feature)
     - Partner already played in trick (1 feature)
     - Lead player position (1 feature)
+    - Left bower tracking (4 features - played, in hand, position who played, suit)
+    - Trump hierarchy in hand (7 features - right bower, left bower, A, K, Q, 10, 9)
+    - Void suit detection (16 features - 4 positions x 4 suits)
+    - Partner coordination (4 features - trump estimate, strength in lead, winning trick, called trump)
 
     Returns:
-        Numpy array of size 130
+        Numpy array of size 161
     """
     features = []
 
@@ -420,6 +424,152 @@ def encode_game_state(game_state) -> np.ndarray:
         if cards_in_trick:
             lead_player = cards_in_trick[0].get("position", 0) / 3.0
     features.append(lead_player)
+
+    # === PHASE 2 ENHANCEMENTS: Strategic Features ===
+
+    # Left bower tracking (4 features) [NEW]
+    left_bower_played = 0.0
+    left_bower_in_hand = 0.0
+    left_bower_position = 0.0
+    left_bower_suit_indicator = 0.0
+
+    if trump_suit:
+        # Determine left bower (Jack of same color suit)
+        same_color_map = {"C": "S", "S": "C", "D": "H", "H": "D"}
+        left_bower_suit = same_color_map.get(trump_suit)
+        if left_bower_suit:
+            left_bower_card = f"J{left_bower_suit}"
+            left_bower_suit_indicator = suit_map.get(left_bower_suit, 0) / 3.0
+
+            # Check if in hand
+            if "hand" in game_state and left_bower_card in game_state["hand"]:
+                left_bower_in_hand = 1.0
+
+            # Check if played
+            for card in played_cards:
+                if card == left_bower_card:
+                    left_bower_played = 1.0
+                    # Find who played it
+                    for trick in game_state.get("completed_tricks", []):
+                        for card_info in trick.get("cards", []):
+                            if card_info.get("card") == left_bower_card:
+                                left_bower_position = card_info.get("position", 0) / 3.0
+                                break
+                    break
+
+    features.extend(
+        [
+            left_bower_played,
+            left_bower_in_hand,
+            left_bower_position,
+            left_bower_suit_indicator,
+        ]
+    )
+
+    # Trump hierarchy in hand (7 features) [NEW]
+    # Track specific trump cards in hand for better trump management
+    trump_hierarchy = np.zeros(7)
+    if trump_suit and "hand" in game_state:
+        # Right bower (Jack of trump)
+        if f"J{trump_suit}" in game_state["hand"]:
+            trump_hierarchy[0] = 1.0
+
+        # Left bower (Jack of same color)
+        same_color_map = {"C": "S", "S": "C", "D": "H", "H": "D"}
+        left_bower_suit = same_color_map.get(trump_suit)
+        if left_bower_suit and f"J{left_bower_suit}" in game_state["hand"]:
+            trump_hierarchy[1] = 1.0
+
+        # Other trump cards in order of strength
+        trump_ranks = ["A", "K", "Q", "10", "9"]
+        for i, rank in enumerate(trump_ranks):
+            if f"{rank}{trump_suit}" in game_state["hand"]:
+                trump_hierarchy[i + 2] = 1.0
+
+    features.extend(trump_hierarchy)
+
+    # Void suit detection (16 features - 4 positions x 4 suits) [NEW]
+    # Track when players show they're void in a suit (critical for strategy)
+    void_detection = np.zeros(16)
+    if game_state.get("completed_tricks"):
+        for trick in game_state["completed_tricks"]:
+            if trick.get("cards") and len(trick["cards"]) > 0:
+                # Determine lead suit of this trick
+                lead_card = trick["cards"][0].get("card")
+                if lead_card and len(lead_card) >= 2:
+                    lead_suit_char = lead_card[-1]
+
+                    # Check each player's response
+                    for card_info in trick["cards"][1:]:  # Skip lead card
+                        card = card_info.get("card")
+                        pos = card_info.get("position")
+                        if card and len(card) >= 2 and pos is not None:
+                            played_suit = card[-1]
+
+                            # If they didn't follow suit, they're void
+                            if played_suit != lead_suit_char:
+                                # Mark this position as void in lead suit
+                                if lead_suit_char in suit_map:
+                                    idx = pos * 4 + suit_map[lead_suit_char]
+                                    void_detection[idx] = 1.0
+
+    features.extend(void_detection)
+
+    # Partner coordination features (4 features) [NEW]
+    partner_position = (position + 2) % 4
+
+    # Partner's trump count estimate (based on plays)
+    partner_trump_estimate = 0.0
+    if trump_suit and game_state.get("completed_tricks"):
+        partner_trump_plays = 0
+        total_partner_plays = 0
+        for trick in game_state["completed_tricks"]:
+            for card_info in trick.get("cards", []):
+                if card_info.get("position") == partner_position:
+                    total_partner_plays += 1
+                    card = card_info.get("card")
+                    if card and len(card) >= 2 and card[-1] == trump_suit:
+                        partner_trump_plays += 1
+        if total_partner_plays > 0:
+            partner_trump_estimate = partner_trump_plays / total_partner_plays
+
+    # Partner has shown strength in lead suit
+    partner_lead_strength = 0.0
+    if game_state.get("current_trick") and game_state["current_trick"].get("cards"):
+        cards_in_trick = game_state["current_trick"]["cards"]
+        if cards_in_trick and len(cards_in_trick) > 0:
+            lead_card = cards_in_trick[0].get("card")
+            if lead_card and len(lead_card) >= 2:
+                lead_suit_char = lead_card[-1]
+                # Check if partner played high card in lead suit
+                for card_info in cards_in_trick:
+                    if card_info.get("position") == partner_position:
+                        card = card_info.get("card")
+                        if card and len(card) >= 2:
+                            # High cards: A, K, Q
+                            if (
+                                card[0] in ["A", "K", "Q"]
+                                and card[-1] == lead_suit_char
+                            ):
+                                partner_lead_strength = 1.0
+
+    # Partner is currently winning the trick
+    partner_winning_trick = 0.0
+    # (Simplified - would need full trick evaluation logic)
+
+    # Partner called trump
+    partner_called_trump = 0.0
+    if game_state.get("trump_caller_position") == partner_position:
+        partner_called_trump = 1.0
+
+    features.extend(
+        [
+            partner_trump_estimate,
+            partner_lead_strength,
+            partner_winning_trick,
+            partner_called_trump,
+        ]
+    )
 
     return np.array(features, dtype=np.float32)
 
