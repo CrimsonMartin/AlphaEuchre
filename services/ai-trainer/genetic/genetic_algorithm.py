@@ -682,11 +682,21 @@ class GeneticAlgorithm:
         """
         Improved crossover using layer-wise blending to preserve good patterns.
         Uses weighted average based on parent fitness rather than random mixing.
+        Handles multi-architecture populations by only crossing over same types.
         """
         if random.random() > self.crossover_rate:
             return copy.deepcopy(parent1)
 
-        child = BasicEuchreNN(use_cuda=self.use_cuda)
+        # Check if architectures match
+        arch1 = ArchitectureRegistry.get_architecture_type(parent1)
+        arch2 = ArchitectureRegistry.get_architecture_type(parent2)
+
+        if arch1 != arch2:
+            # Cannot crossover different architectures, return a copy of parent1
+            return copy.deepcopy(parent1)
+
+        # Create child of the same architecture
+        child = copy.deepcopy(parent1)
 
         # Layer-wise crossover with adaptive blending
         for child_param, p1_param, p2_param in zip(
