@@ -145,55 +145,95 @@ class ELORatingSystem:
     def update_individual_ratings(
         self,
         player_indices: List[int],
-        tricks_won: Dict[int, int],
-        trump_caller_index: Optional[int] = None,
-        calling_team_won: bool = False,
+        points_earned: Dict[int, int],
     ) -> Dict[int, float]:
         """
-        Update ratings based on individual trick performance.
+        Update ratings based on Euchre points earned.
 
-        This replaces team-based win/loss with individual trick-based rewards.
-        Models are rewarded for the number of tricks they personally won.
+        SIMPLE FORMULA: ELO change = points x K_factor
+        - Earn 1 point → +32 ELO
+        - Earn 2 points (march) → +64 ELO
+        - Earn 4 points (alone march) → +128 ELO
+        - Lose 2 points (euchred) → -64 ELO
 
         Args:
             player_indices: List of 4 model indices in the hand
-            tricks_won: Dictionary of player_index -> number of tricks won (0-5)
-            trump_caller_index: Optional index of player who called trump
-            calling_team_won: Whether the team that called trump won the hand (>=3 tricks)
+            points_earned: Dictionary of player_index -> points earned this hand
+                          (can be negative if opponent scored)
 
         Returns:
             Dictionary of model_index -> new_rating for all participants
         """
         updated_ratings = {}
 
-        # Calculate expected performance (should average 1.25 tricks per player)
-        # but we'll use relative comparisons instead
-
         for idx in player_indices:
             old_rating = self.get_rating(idx)
-            player_tricks = tricks_won.get(idx, 0)
+            points = points_earned.get(idx, 0)
 
-            # Base rating change: proportional to tricks won
-            # Scale from -K to +K based on 0-5 tricks
-            # 0 tricks = big loss, 5 tricks = big gain, ~1-2 tricks = neutral
-            normalized_performance = (
-                player_tricks / 5.0
-            ) * 2.0 - 0.5  # maps 0->-0.5, 5->1.5, 2.5->0.5
-            base_change = self.k_factor * normalized_performance
-
-            # Apply trump calling modifiers
-            modifier = 1.0
-            if trump_caller_index is not None and idx == trump_caller_index:
-                if calling_team_won:
-                    # Reward aggressive successful trump calls
-                    modifier = 1.4  # 40% bonus
-                else:
-                    # Penalty for bad calls, but not too harsh to encourage trying
-                    modifier = 0.6  # 40% penalty
-
-            rating_change = base_change * modifier
+            # Simple: ELO change = points × K_factor
+            rating_change = points * self.k_factor
             new_rating = old_rating + rating_change
 
+            # print(
+            #     f"Player {idx}: old_rating={old_rating:.2f}, points_earned={points:.2f}, rating_change={rating_change:.2f}, new_rating={new_rating:.2f}"
+            # )
+
+            self.ratings[idx] = new_rating
+            updated_ratings[idx] = new_rating
+
+        return updated_ratings
+
+    def update_head_to_head(
+        self,
+        winner_indices: List[int],
+        loser_indices: List[int],
+    ) -> Dict[int, float]:
+        """
+        Update ratings for head-to-head team matchup using chess-style ELO.
+
+        Each winner gains ELO based on how much stronger the losers were.
+        Each loser loses ELO based on how much weaker the winners were.
+
+        This creates the desired behavior:
+        - Beating stronger opponents = big ELO gain
+        - Losing to weaker opponents = big ELO loss
+        - Beating weaker opponents = small ELO gain
+        - Losing to stronger opponents = small ELO loss
+
+        Args:
+            winner_indices: List of model indices on winning team
+            loser_indices: List of model indices on losing team
+
+        Returns:
+            Dictionary of model_index -> new_rating for all participants
+        """
+        # Calculate average team ratings
+        winner_avg = sum(self.get_rating(i) for i in winner_indices) / len(
+            winner_indices
+        )
+        loser_avg = sum(self.get_rating(i) for i in loser_indices) / len(loser_indices)
+
+        # Calculate expected scores (chess-style)
+        expected_winner = self.expected_score(winner_avg, loser_avg)
+        expected_loser = self.expected_score(loser_avg, winner_avg)
+
+        # Calculate rating changes
+        # Winner gets 1.0 (won), Loser gets 0.0 (lost)
+        winner_change = self.k_factor * (1.0 - expected_winner)
+        loser_change = self.k_factor * (0.0 - expected_loser)
+
+        # Apply changes to all team members
+        updated_ratings = {}
+
+        for idx in winner_indices:
+            old_rating = self.get_rating(idx)
+            new_rating = old_rating + winner_change
+            self.ratings[idx] = new_rating
+            updated_ratings[idx] = new_rating
+
+        for idx in loser_indices:
+            old_rating = self.get_rating(idx)
+            new_rating = old_rating + loser_change
             self.ratings[idx] = new_rating
             updated_ratings[idx] = new_rating
 

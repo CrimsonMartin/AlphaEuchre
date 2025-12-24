@@ -28,11 +28,15 @@ class BasicEuchreNN(nn.Module):
         trump_output_size=5,  # 4 suits + pass
         discard_output_size=24,
         use_cuda=True,
+        temperature=2.0,  # Temperature for softmax (higher = more differentiation)
     ):
         super(BasicEuchreNN, self).__init__()
 
         # Architecture identifier
         self.architecture_type = "basic"
+
+        # Temperature for softmax scaling
+        self.temperature = temperature
 
         # Determine device (CUDA if available and requested)
         self.device = torch.device(
@@ -52,7 +56,7 @@ class BasicEuchreNN(nn.Module):
 
         # Trump Selection Head (smaller network for trump decisions)
         trump_layers = []
-        prev_size = 37  # hand (24) + turned_up (4) + pos (1) + scores (2) + dealer (4) + is_dealer (1) + diff (1)
+        prev_size = 49  # hand (24) + turned_up (4) + pos (1) + scores (2) + dealer (4) + is_dealer (1) + diff (1) + hand_strength (12)
         for hidden_size in trump_hidden_sizes:
             trump_layers.append(nn.Linear(prev_size, hidden_size))
             trump_layers.append(nn.ReLU())
@@ -72,23 +76,63 @@ class BasicEuchreNN(nn.Module):
 
         self.softmax = nn.Softmax(dim=1)
 
+        # Custom initialization for output layers to create initial differentiation
+        self._initialize_output_layers()
+
         # Move model to device
         self.to(self.device)
 
+    def _initialize_output_layers(self):
+        """
+        Initialize output layers with larger weights to create initial differentiation.
+        This helps break the uniform output problem.
+        """
+        # Initialize final layer of card network
+        for module in self.card_network.modules():
+            if isinstance(module, nn.Linear):
+                final_layer = module
+        nn.init.normal_(final_layer.weight, mean=0.0, std=0.5)
+        nn.init.zeros_(final_layer.bias)
+
+        # Initialize final layer of trump network
+        for module in self.trump_network.modules():
+            if isinstance(module, nn.Linear):
+                final_layer = module
+        nn.init.normal_(final_layer.weight, mean=0.0, std=0.5)
+        nn.init.zeros_(final_layer.bias)
+
+        # Initialize final layer of discard network
+        for module in self.discard_network.modules():
+            if isinstance(module, nn.Linear):
+                final_layer = module
+        nn.init.normal_(final_layer.weight, mean=0.0, std=0.5)
+        nn.init.zeros_(final_layer.bias)
+
     def forward(self, x):
-        """Forward pass through the card playing network"""
+        """Forward pass through the card playing network with temperature scaling"""
         x = self.card_network(x)
-        return self.softmax(x)
+        # Apply temperature scaling before softmax
+        # Temperature > 1 makes distribution more uniform (exploration)
+        # Temperature < 1 makes distribution more peaked (exploitation)
+        x = x / self.temperature
+        probs = self.softmax(x)
+        return probs
 
     def forward_trump(self, x):
-        """Forward pass through the trump selection network"""
+        """Forward pass through the trump selection network with temperature scaling"""
         x = self.trump_network(x)
-        return self.softmax(x)
+        # Apply temperature scaling before softmax
+        x = x / self.temperature
+        probs = self.softmax(x)
+        return probs
 
     def forward_discard(self, x):
-        """Forward pass through the discard selection network"""
+        """Forward pass through the discard selection network with temperature scaling"""
         x = self.discard_network(x)
-        return self.softmax(x)
+        # Apply temperature scaling before softmax
+        x = x / self.temperature
+        probs = self.softmax(x)
+        return probs
 
     def predict_card(self, game_state_encoding):
         """
@@ -109,6 +153,35 @@ class BasicEuchreNN(nn.Module):
             output = self.forward(x)
             return torch.argmax(output, dim=1).cpu().item()
 
+    def predict_card_masked(self, game_state_encoding, valid_card_indices):
+        """
+        Predict which card to play from a set of valid cards only.
+
+        This ensures the network's learned preferences drive selection even when
+        outputs are nearly uniform, providing evolutionary pressure.
+
+        Args:
+            game_state_encoding: Numpy array or tensor of encoded game state
+            valid_card_indices: List of valid card indices (0-23)
+
+        Returns:
+            Card index with highest probability among valid cards
+        """
+        with torch.no_grad():
+            if isinstance(game_state_encoding, np.ndarray):
+                x = torch.FloatTensor(game_state_encoding).unsqueeze(0).to(self.device)
+            else:
+                x = game_state_encoding.to(self.device)
+
+            output = self.forward(x)
+
+            # Mask invalid cards with -inf so they're never selected
+            mask = torch.full_like(output, float("-inf"))
+            mask[0, valid_card_indices] = 0
+            masked_output = output + mask
+
+            return torch.argmax(masked_output, dim=1).cpu().item()
+
     def predict_trump_decision(self, trump_state_encoding):
         """
         Predict trump decision (which suit to call or pass).
@@ -127,6 +200,37 @@ class BasicEuchreNN(nn.Module):
 
             output = self.forward_trump(x)
             return torch.argmax(output, dim=1).cpu().item()
+
+    def predict_trump_decision_masked(
+        self, trump_state_encoding, valid_decision_indices
+    ):
+        """
+        Predict trump decision from a set of valid options only.
+
+        This ensures the network's learned preferences drive selection.
+
+        Args:
+            trump_state_encoding: Numpy array or tensor of encoded trump state
+            valid_decision_indices: List of valid decision indices
+                                   (0-3 = suits C,D,H,S, 4 = pass)
+
+        Returns:
+            Decision index with highest probability among valid options
+        """
+        with torch.no_grad():
+            if isinstance(trump_state_encoding, np.ndarray):
+                x = torch.FloatTensor(trump_state_encoding).unsqueeze(0).to(self.device)
+            else:
+                x = trump_state_encoding.to(self.device)
+
+            output = self.forward_trump(x)
+
+            # Mask invalid decisions with -inf
+            mask = torch.full_like(output, float("-inf"))
+            mask[0, valid_decision_indices] = 0
+            masked_output = output + mask
+
+            return torch.argmax(masked_output, dim=1).cpu().item()
 
     def predict_discard(self, discard_state_encoding):
         """
@@ -150,6 +254,38 @@ class BasicEuchreNN(nn.Module):
 
             output = self.forward_discard(x)
             return torch.argmax(output, dim=1).cpu().item()
+
+    def predict_discard_masked(self, discard_state_encoding, valid_card_indices):
+        """
+        Predict which card to discard from cards actually in hand.
+
+        This ensures the network's learned preferences drive selection.
+
+        Args:
+            discard_state_encoding: Numpy array or tensor of encoded discard state
+            valid_card_indices: List of valid card indices (cards in dealer's hand)
+
+        Returns:
+            Card index to discard (from valid cards only)
+        """
+        with torch.no_grad():
+            if isinstance(discard_state_encoding, np.ndarray):
+                x = (
+                    torch.FloatTensor(discard_state_encoding)
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+            else:
+                x = discard_state_encoding.to(self.device)
+
+            output = self.forward_discard(x)
+
+            # Mask invalid cards with -inf
+            mask = torch.full_like(output, float("-inf"))
+            mask[0, valid_card_indices] = 0
+            masked_output = output + mask
+
+            return torch.argmax(masked_output, dim=1).cpu().item()
 
     def predict_cards_batch(self, game_state_encodings):
         """
@@ -576,9 +712,9 @@ def encode_game_state(game_state) -> np.ndarray:
 
 def encode_trump_state(game_state, turned_up_card=None) -> np.ndarray:
     """
-    Encode state for trump selection decision.
+    Encode state for trump selection decision with hand strength features.
 
-    Features (37 total):
+    Features (49 total):
     - Player's hand (24 features)
     - Turned up card suit (4 features - one-hot)
     - Player position relative to dealer (1 feature - normalized)
@@ -586,9 +722,19 @@ def encode_trump_state(game_state, turned_up_card=None) -> np.ndarray:
     - Dealer position (4 features - one-hot)
     - Is player dealer (1 feature)
     - Score differential (1 feature - normalized)
+    - HAND STRENGTH FEATURES (12 features):
+      * Trump cards in hand (1 feature)
+      * Right bower in hand (1 feature)
+      * Left bower in hand (1 feature)
+      * Trump ace in hand (1 feature)
+      * Trump king in hand (1 feature)
+      * Off-suit aces count (1 feature)
+      * Overall hand strength score (1 feature)
+      * Void suits (4 features - one per suit)
+      * Partner is dealer (1 feature)
 
     Returns:
-        Numpy array of size 37
+        Numpy array of size 49
     """
     features = []
 
@@ -600,19 +746,22 @@ def encode_trump_state(game_state, turned_up_card=None) -> np.ndarray:
 
     # Player's hand (24 features)
     hand_encoding = np.zeros(24)
+    hand_cards = []
     if "hand" in game_state:
-        for card in game_state["hand"]:
+        hand_cards = game_state["hand"]
+        for card in hand_cards:
             if card in all_cards:
                 hand_encoding[all_cards.index(card)] = 1
     features.extend(hand_encoding)
 
     # Turned up card suit (4 features - one-hot)
     turned_up_encoding = np.zeros(4)
+    trump_suit = None
     if turned_up_card and len(turned_up_card) >= 2:
         suit_map = {"C": 0, "D": 1, "H": 2, "S": 3}
-        suit = turned_up_card[-1]
-        if suit in suit_map:
-            turned_up_encoding[suit_map[suit]] = 1
+        trump_suit = turned_up_card[-1]
+        if trump_suit in suit_map:
+            turned_up_encoding[suit_map[trump_suit]] = 1
     features.extend(turned_up_encoding)
 
     # Position relative to dealer (1 feature - normalized)
@@ -643,6 +792,120 @@ def encode_trump_state(game_state, turned_up_card=None) -> np.ndarray:
     if current_pos % 2 == 1:
         score_diff = -score_diff
     features.append(score_diff)
+
+    # === HAND STRENGTH FEATURES (12 features) ===
+    # These help the model learn WHEN to call trump
+
+    # 1. Trump cards in hand (1 feature - normalized)
+    trump_card_count = 0.0
+    if trump_suit:
+        trump_card_count = (
+            sum(
+                1
+                for card in hand_cards
+                if card and len(card) >= 2 and card[-1] == trump_suit
+            )
+            / 5.0
+        )
+    features.append(trump_card_count)
+
+    # 2. Right bower in hand (1 feature)
+    right_bower = 0.0
+    if trump_suit and f"J{trump_suit}" in hand_cards:
+        right_bower = 1.0
+    features.append(right_bower)
+
+    # 3. Left bower in hand (1 feature)
+    left_bower = 0.0
+    if trump_suit:
+        same_color_map = {"C": "S", "S": "C", "D": "H", "H": "D"}
+        left_bower_suit = same_color_map.get(trump_suit)
+        if left_bower_suit and f"J{left_bower_suit}" in hand_cards:
+            left_bower = 1.0
+    features.append(left_bower)
+
+    # 4. Trump ace in hand (1 feature)
+    trump_ace = 0.0
+    if trump_suit and f"A{trump_suit}" in hand_cards:
+        trump_ace = 1.0
+    features.append(trump_ace)
+
+    # 5. Trump king in hand (1 feature)
+    trump_king = 0.0
+    if trump_suit and f"K{trump_suit}" in hand_cards:
+        trump_king = 1.0
+    features.append(trump_king)
+
+    # 6. Off-suit aces count (1 feature - normalized)
+    off_suit_aces = 0.0
+    if trump_suit:
+        off_suit_aces = (
+            sum(
+                1
+                for card in hand_cards
+                if card and len(card) >= 2 and card[0] == "A" and card[-1] != trump_suit
+            )
+            / 3.0
+        )
+    features.append(off_suit_aces)
+
+    # 7. Overall hand strength score (1 feature - normalized)
+    # Weighted scoring: Right bower=6, Left bower=5, A=4, K=3, Q=2, 10=1, 9=0.5
+    hand_strength = 0.0
+    if trump_suit:
+        same_color_map = {"C": "S", "S": "C", "D": "H", "H": "D"}
+        left_bower_suit = same_color_map.get(trump_suit)
+
+        for card in hand_cards:
+            if card and len(card) >= 2:
+                rank = card[:-1]
+                suit = card[-1]
+
+                # Trump cards
+                if suit == trump_suit:
+                    if rank == "J":
+                        hand_strength += 6  # Right bower
+                    elif rank == "A":
+                        hand_strength += 4
+                    elif rank == "K":
+                        hand_strength += 3
+                    elif rank == "Q":
+                        hand_strength += 2
+                    elif rank == "10":
+                        hand_strength += 1
+                    else:
+                        hand_strength += 0.5
+                # Left bower
+                elif suit == left_bower_suit and rank == "J":
+                    hand_strength += 5
+                # Off-suit aces
+                elif rank == "A":
+                    hand_strength += 2
+                # Other high cards
+                elif rank == "K":
+                    hand_strength += 1
+
+        hand_strength = hand_strength / 25.0  # Normalize (max ~25)
+    features.append(hand_strength)
+
+    # 8-11. Void suits (4 features - one per suit)
+    # Being void in a suit is good for trump calling
+    void_suits = np.zeros(4)
+    if trump_suit:
+        suit_map = {"C": 0, "D": 1, "H": 2, "S": 3}
+        for suit_char, suit_idx in suit_map.items():
+            has_suit = any(
+                card and len(card) >= 2 and card[-1] == suit_char for card in hand_cards
+            )
+            if not has_suit:
+                void_suits[suit_idx] = 1.0
+    features.extend(void_suits)
+
+    # 12. Partner is dealer (1 feature)
+    # Good to call when partner is dealer (they get to pick up)
+    partner_pos = (current_pos + 2) % 4
+    partner_is_dealer = 1.0 if partner_pos == dealer_pos else 0.0
+    features.append(partner_is_dealer)
 
     return np.array(features, dtype=np.float32)
 

@@ -70,24 +70,30 @@ class GeneticAlgorithm:
     def __init__(
         self,
         population_size=32,
-        mutation_rate=0.10,  # Reduced from 0.15 for more stability
-        crossover_rate=0.8,  # Increased from 0.7 for more breeding
-        elite_size=8,  # Increased from 4 to preserve more good models
-        games_per_pairing=50,
+        mutation_rate=0.10,  # Small mutations for incremental progress
+        mutation_strength=0.20,  # Strength of weight perturbations (increased from 0.05)
+        crossover_rate=0.7,  # Keep for compatibility
+        elite_size=1,  # Single champion for champion_variations strategy
+        hands_per_model=50,  # Hands each model plays in sampled round-robin
+        games_per_pairing=50,  # Alias for hands_per_model for compatibility
         num_workers=4,
         use_elo=True,
         use_cuda=None,
         parallel_mode="thread",  # "thread", "process", or "sequential"
+        evolution_strategy="champion_variations",  # "champion_variations" or "traditional"
     ):
         self.population_size = population_size
         self.mutation_rate = mutation_rate
+        self.mutation_strength = mutation_strength
         self.base_mutation_rate = mutation_rate  # Store base for adaptive mutation
         self.crossover_rate = crossover_rate
         self.elite_size = elite_size
-        self.games_per_pairing = games_per_pairing
+        self.hands_per_model = hands_per_model
+        self.games_per_pairing = games_per_pairing  # Alias for compatibility
         self.num_workers = num_workers or max(1, multiprocessing.cpu_count())
         self.use_elo = use_elo
         self.parallel_mode = parallel_mode
+        self.evolution_strategy = evolution_strategy
         self.population: List[BasicEuchreNN] = []
         self.elo_ratings: List[float] = []
 
@@ -157,18 +163,12 @@ class GeneticAlgorithm:
         # Fill remaining slots with new random models
         remaining = self.population_size - len(self.population)
         if remaining > 0:
-            if self.architecture_enabled:
-                # Create transformer-only population for best performance
-                new_models = ArchitectureRegistry.create_population(
-                    remaining,
-                    architecture_distribution={"transformer": 1.0},
-                    use_cuda=self.use_cuda,
-                )
-                self.population.extend(new_models)
-            else:
-                # Create basic models only (legacy mode)
-                while len(self.population) < self.population_size:
-                    self.population.append(BasicEuchreNN(use_cuda=self.use_cuda))
+
+            new_models = ArchitectureRegistry.create_population(
+                remaining,
+                use_cuda=self.use_cuda,
+            )
+            self.population.extend(new_models)
 
         # Initialize ELO ratings
         self.elo_system.reset_ratings()
@@ -225,7 +225,7 @@ class GeneticAlgorithm:
 
             # Handle different game phases
             if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
-                # Use neural network for trump selection (Round 1)
+                # Use neural network for trump selection (Round 1) with masking
                 game_state_dict = game.get_state(perspective_position=current_pos)
                 turned_up_card = (
                     str(game.state.turned_up_card)
@@ -233,7 +233,29 @@ class GeneticAlgorithm:
                     else None
                 )
                 trump_state = encode_trump_state(game_state_dict, turned_up_card)
-                decision_idx = current_model.predict_trump_decision(trump_state)
+
+                # Round 1: Only 2 valid options - call turned-up suit or pass
+                # Map turned-up suit to index (C=0, D=1, H=2, S=3)
+                suit_map_enum = {
+                    Suit.CLUBS: 0,
+                    Suit.DIAMONDS: 1,
+                    Suit.HEARTS: 2,
+                    Suit.SPADES: 3,
+                }
+                turned_up_suit_idx = None
+                if game.state.turned_up_card:
+                    turned_up_suit_idx = suit_map_enum.get(
+                        game.state.turned_up_card.suit
+                    )
+
+                if turned_up_suit_idx is not None:
+                    # Valid options: turned-up suit index and pass (4)
+                    valid_trump_indices = [turned_up_suit_idx, 4]
+                    decision_idx = current_model.predict_trump_decision_masked(
+                        trump_state, valid_trump_indices
+                    )
+                else:
+                    decision_idx = current_model.predict_trump_decision(trump_state)
 
                 if decision_idx == 4:
                     # Model wants to pass
@@ -259,7 +281,7 @@ class GeneticAlgorithm:
                                 trump_caller_position = current_pos
 
             elif game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
-                # Use neural network for trump selection (Round 2)
+                # Use neural network for trump selection (Round 2) with masking
                 game_state_dict = game.get_state(perspective_position=current_pos)
                 turned_up_card = (
                     str(game.state.turned_up_card)
@@ -267,7 +289,6 @@ class GeneticAlgorithm:
                     else None
                 )
                 trump_state = encode_trump_state(game_state_dict, turned_up_card)
-                decision_idx = current_model.predict_trump_decision(trump_state)
 
                 turned_up_suit = (
                     game.state.turned_up_card.suit
@@ -276,6 +297,24 @@ class GeneticAlgorithm:
                 )
                 is_dealer = (
                     game.state.current_player_position == game.state.dealer_position
+                )
+
+                # Round 2: Can call any suit EXCEPT turned-up, or pass (dealer can't pass)
+                suit_map_enum = {
+                    Suit.CLUBS: 0,
+                    Suit.DIAMONDS: 1,
+                    Suit.HEARTS: 2,
+                    Suit.SPADES: 3,
+                }
+                turned_up_suit_idx = suit_map_enum.get(turned_up_suit, 0)
+
+                # Valid options: all suits except turned-up, plus pass (if not dealer)
+                valid_trump_indices = [i for i in range(4) if i != turned_up_suit_idx]
+                if not is_dealer:
+                    valid_trump_indices.append(4)  # Non-dealer can pass
+
+                decision_idx = current_model.predict_trump_decision_masked(
+                    trump_state, valid_trump_indices
                 )
 
                 if decision_idx == 4:
@@ -339,22 +378,38 @@ class GeneticAlgorithm:
                                 trump_caller_position = current_pos
 
             elif game.state.phase == GamePhase.DEALER_DISCARD:
-                # Use neural network for dealer discard
+                # Use neural network for dealer discard with masking
                 dealer = game.state.get_player(game.state.dealer_position)
                 game_state_dict = game.get_state(
                     perspective_position=game.state.dealer_position
                 )
                 hand_with_pickup = [str(card) for card in dealer.hand]
                 discard_state = encode_discard_state(game_state_dict, hand_with_pickup)
-                card_idx = current_model.predict_discard(discard_state)
 
-                if card_idx < len(self.all_cards):
-                    predicted_card_str = self.all_cards[card_idx]
+                # Map dealer's hand to valid indices
+                valid_discard_indices = []
+                for card in dealer.hand:
+                    card_str = str(card)
+                    if card_str in self.all_cards:
+                        valid_discard_indices.append(self.all_cards.index(card_str))
+
+                if valid_discard_indices:
+                    card_idx = current_model.predict_discard_masked(
+                        discard_state, valid_discard_indices
+                    )
+                    predicted_card_str = (
+                        self.all_cards[card_idx]
+                        if card_idx < len(self.all_cards)
+                        else None
+                    )
+
                     card_to_discard = None
-                    for card in dealer.hand:
-                        if str(card) == predicted_card_str:
-                            card_to_discard = card
-                            break
+                    if predicted_card_str:
+                        for card in dealer.hand:
+                            if str(card) == predicted_card_str:
+                                card_to_discard = card
+                                break
+
                     if card_to_discard is None:
                         card_to_discard = dealer.hand[0]
                 else:
@@ -363,27 +418,40 @@ class GeneticAlgorithm:
                 game.dealer_discard(card_to_discard)
 
             elif game.state.phase == GamePhase.PLAYING:
-                # Use neural network to select card
+                # Use neural network to select card with masking
                 game_state_dict = game.get_state(perspective_position=current_pos)
                 state_encoding = encode_game_state(game_state_dict)
                 valid_cards = game.get_valid_moves(current_pos)
 
                 if valid_cards:
-                    card_idx = current_model.predict_card(state_encoding)
-                    predicted_card_str = (
-                        self.all_cards[card_idx]
-                        if card_idx < len(self.all_cards)
-                        else None
-                    )
+                    # Map valid cards to indices
+                    valid_card_indices = []
+                    for card in valid_cards:
+                        card_str = str(card)
+                        if card_str in self.all_cards:
+                            valid_card_indices.append(self.all_cards.index(card_str))
 
-                    selected_card = None
-                    if predicted_card_str:
-                        for card in valid_cards:
-                            if str(card) == predicted_card_str:
-                                selected_card = card
-                                break
+                    # Use masked prediction to only consider valid cards
+                    if valid_card_indices:
+                        card_idx = current_model.predict_card_masked(
+                            state_encoding, valid_card_indices
+                        )
+                        predicted_card_str = (
+                            self.all_cards[card_idx]
+                            if card_idx < len(self.all_cards)
+                            else None
+                        )
 
-                    if selected_card is None:
+                        selected_card = None
+                        if predicted_card_str:
+                            for card in valid_cards:
+                                if str(card) == predicted_card_str:
+                                    selected_card = card
+                                    break
+
+                        if selected_card is None:
+                            selected_card = valid_cards[0]
+                    else:
                         selected_card = valid_cards[0]
 
                     result = game.play_card(selected_card)
@@ -415,6 +483,41 @@ class GeneticAlgorithm:
         if trump_caller_position is not None:
             trump_caller_index = model_indices[trump_caller_position]
 
+        # Calculate Euchre points earned by each team
+        # Determine who called trump and calculate points
+        points_team1 = 0
+        points_team2 = 0
+
+        if calling_team is not None:
+            if calling_team_won:
+                # Calling team made it (>=3 tricks)
+                if calling_team == 1:
+                    if team1_tricks == 5:
+                        points_team1 = 2  # March
+                    else:
+                        points_team1 = 1  # Made it
+                else:  # calling_team == 2
+                    if team2_tricks == 5:
+                        points_team2 = 2  # March
+                    else:
+                        points_team2 = 1  # Made it
+            else:
+                # Calling team got euchred - opponent gets 2 points
+                if calling_team == 1:
+                    points_team2 = 2  # Team 2 euchred team 1
+                else:
+                    points_team1 = 2  # Team 1 euchred team 2
+
+        # Map points to individual players
+        # Each player on winning team gets the points, losing team gets negative
+        points_by_index = {}
+        for pos in range(4):
+            idx = model_indices[pos]
+            if pos % 2 == 0:  # Team 1
+                points_by_index[idx] = points_team1 - points_team2
+            else:  # Team 2
+                points_by_index[idx] = points_team2 - points_team1
+
         return {
             "tricks_won": tricks_won_by_index,
             "trump_caller_position": trump_caller_position,
@@ -422,6 +525,7 @@ class GeneticAlgorithm:
             "calling_team_won": calling_team_won,
             "team1_tricks": team1_tricks,
             "team2_tricks": team2_tricks,
+            "points_earned": points_by_index,
         }
 
     def play_game_with_teams(
@@ -682,7 +786,7 @@ class GeneticAlgorithm:
                 game.dealer_discard(card_to_discard)
 
             elif game.state.phase == GamePhase.PLAYING:
-                # Use neural network to select card
+                # Use neural network to select card with masking
                 game_state_dict = game.get_state(perspective_position=current_pos)
                 state_encoding = encode_game_state(game_state_dict)
 
@@ -690,24 +794,34 @@ class GeneticAlgorithm:
                 valid_cards = game.get_valid_moves(current_pos)
 
                 if valid_cards:
-                    # Get model prediction
-                    card_idx = current_model.predict_card(state_encoding)
-                    predicted_card_str = (
-                        self.all_cards[card_idx]
-                        if card_idx < len(self.all_cards)
-                        else None
-                    )
+                    # Map valid cards to indices
+                    valid_card_indices = []
+                    for card in valid_cards:
+                        card_str = str(card)
+                        if card_str in self.all_cards:
+                            valid_card_indices.append(self.all_cards.index(card_str))
 
-                    # Check if predicted card is valid
-                    selected_card = None
-                    if predicted_card_str:
-                        for card in valid_cards:
-                            if str(card) == predicted_card_str:
-                                selected_card = card
-                                break
+                    # Use masked prediction to only consider valid cards
+                    if valid_card_indices:
+                        card_idx = current_model.predict_card_masked(
+                            state_encoding, valid_card_indices
+                        )
+                        predicted_card_str = (
+                            self.all_cards[card_idx]
+                            if card_idx < len(self.all_cards)
+                            else None
+                        )
 
-                    # If prediction not valid, pick first valid card
-                    if selected_card is None:
+                        selected_card = None
+                        if predicted_card_str:
+                            for card in valid_cards:
+                                if str(card) == predicted_card_str:
+                                    selected_card = card
+                                    break
+
+                        if selected_card is None:
+                            selected_card = valid_cards[0]
+                    else:
                         selected_card = valid_cards[0]
 
                     # Play the card
@@ -852,14 +966,13 @@ class GeneticAlgorithm:
         self, models: List[BasicEuchreNN], model_indices: List[int] | None = None
     ) -> Dict[int, float]:
         """
-        Run round-robin hands (not full games) with 4 models using individual trick-based ELO.
+        Run round-robin hands (not full games) with 4 models using accumulated points.
 
-        This is MUCH faster than full games and rewards individual performance directly.
-
-        Team pairings:
-        - Round 1: (A+B) vs (C+D)
-        - Round 2: (A+C) vs (B+D)
-        - Round 3: (A+D) vs (B+C)
+        ANTI-DEGENERATE STRATEGY:
+        - Accumulates points over many hands before updating ELO
+        - Penalizes models that call trump too frequently (>80%)
+        - Penalizes models with high euchre rates (>40%)
+        - Rewards selective, strategic trump calling
 
         Args:
             models: List of exactly 4 models
@@ -874,34 +987,234 @@ class GeneticAlgorithm:
         if model_indices is None:
             model_indices = list(range(4))
 
-        # Track ELO changes
-        elo_changes = {idx: 0.0 for idx in model_indices}
+        # Track accumulated statistics
+        accumulated_points = {idx: 0 for idx in model_indices}
+        call_counts = {idx: 0 for idx in model_indices}  # Track calling behavior
+        euchre_counts = {idx: 0 for idx in model_indices}  # Track euchres
+        trump_opportunities = {
+            idx: 0 for idx in model_indices
+        }  # Track opportunities to call
 
-        # Play hands directly (no team pairings needed - all 4 play each hand)
-        # Use same number as games_per_pairing but these are hands, not full games
+        # Play many hands and accumulate statistics
         for hand_num in range(self.games_per_pairing):
             # Play a single hand with all 4 models
             hand_result = self.play_single_hand(models, model_indices)
 
-            tricks_won = hand_result["tricks_won"]
-            trump_caller_index = hand_result["trump_caller_index"]
-            calling_team_won = hand_result["calling_team_won"]
+            # Accumulate points
+            for idx, points in hand_result["points_earned"].items():
+                accumulated_points[idx] += points
 
-            # Update individual ratings based on tricks won
-            updated_ratings = self.elo_system.update_individual_ratings(
-                model_indices,
-                tricks_won,
-                trump_caller_index=trump_caller_index,
-                calling_team_won=calling_team_won,
+            # Track who called trump and if they got euchred
+            if hand_result.get("trump_caller_index") is not None:
+                caller_idx = hand_result["trump_caller_index"]
+                call_counts[caller_idx] += 1
+
+                # Track if this call resulted in a euchre
+                if not hand_result.get("calling_team_won"):
+                    euchre_counts[caller_idx] += 1
+
+            # Track trump opportunities (each player gets 1-2 chances per hand)
+            # Approximate: each hand has ~1.5 opportunities per player on average
+            for idx in model_indices:
+                trump_opportunities[idx] += 1
+
+        # ANTI-DEGENERATE PENALTIES
+        for idx in model_indices:
+            # Calculate call rate (how often they call when they have opportunity)
+            call_rate = call_counts[idx] / max(1, trump_opportunities[idx])
+
+            # PENALTY 1: Over-calling (calling >80% of the time)
+            if call_rate > 0.8:
+                over_call_penalty = int((call_rate - 0.8) * 100)  # Scale penalty
+                accumulated_points[idx] -= over_call_penalty
+                # Debug logging (optional)
+                # print(f"    Model {idx}: Over-calling penalty -{over_call_penalty} (rate: {call_rate:.2%})")
+
+            # PENALTY 2: High euchre rate (getting euchred >40% when calling)
+            if call_counts[idx] > 0:
+                euchre_rate = euchre_counts[idx] / call_counts[idx]
+                if euchre_rate > 0.4:
+                    euchre_penalty = int((euchre_rate - 0.4) * 150)  # Stronger penalty
+                    accumulated_points[idx] -= euchre_penalty
+                    # Debug logging (optional)
+                    # print(f"    Model {idx}: High euchre penalty -{euchre_penalty} (rate: {euchre_rate:.2%})")
+
+            # PENALTY 3: Under-calling (never calling, always passing)
+            if call_rate < 0.05:  # Calling <5% of the time
+                under_call_penalty = int((0.05 - call_rate) * 80)
+                accumulated_points[idx] -= under_call_penalty
+                # Debug logging (optional)
+                # print(f"    Model {idx}: Under-calling penalty -{under_call_penalty} (rate: {call_rate:.2%})")
+
+        # Update ELO once based on final accumulated points
+        updated_ratings = self.elo_system.update_individual_ratings(
+            model_indices,
+            accumulated_points,
+        )
+
+        # Track changes
+        elo_changes = {idx: 0.0 for idx in model_indices}
+        for idx in model_indices:
+            elo_changes[idx] = (
+                self.elo_system.get_rating(idx) - self.elo_system.initial_rating
             )
 
-            # Track changes
-            for idx in model_indices:
-                elo_changes[idx] = (
-                    self.elo_system.get_rating(idx) - self.elo_system.initial_rating
+        return elo_changes
+
+    def run_sampled_round_robin(self) -> List[float]:
+        """
+        NEW: Sampled round-robin tournament where each model plays against
+        random opponents with shuffled team compositions.
+
+        Uses chess-style ELO updates (head-to-head).
+        Parallelized for speed using ThreadPoolExecutor.
+
+        Returns:
+            List of ELO ratings for each model
+        """
+        # Reset ELO system for this generation
+        self.elo_system.reset_ratings()
+
+        print(f"Running sampled round-robin tournament (parallel)...")
+        print(f"  Each model plays {self.hands_per_model} hands")
+        print(f"  Using chess-style ELO updates (head-to-head)")
+        print(f"  Workers: {self.num_workers}")
+
+        # Pre-generate all matchups
+        all_matchups = []
+        for model_idx in range(len(self.population)):
+            for hand_num in range(self.hands_per_model):
+                # Randomly select 3 other models to play with
+                other_indices = [
+                    i for i in range(len(self.population)) if i != model_idx
+                ]
+                selected_indices = random.sample(
+                    other_indices, min(3, len(other_indices))
                 )
 
-        return elo_changes
+                # If not enough models, fill with duplicates
+                while len(selected_indices) < 3:
+                    selected_indices.append(random.choice(other_indices))
+
+                # Create team of 4: current model + 3 random others
+                all_indices = [model_idx] + selected_indices
+                random.shuffle(all_indices)  # Shuffle positions
+
+                all_matchups.append(all_indices)
+
+        total_hands = len(all_matchups)
+        print(f"  Total hands to play: {total_hands}")
+
+        # Use parallel processing if enabled
+        if self.parallel_mode == "sequential" or self.num_workers <= 1:
+            # Sequential processing
+            for matchup_indices in all_matchups:
+                self._play_and_update_hand(matchup_indices)
+        else:
+            # Parallel processing with ThreadPoolExecutor
+            self._run_matchups_parallel(all_matchups)
+
+        # Get final ELO ratings
+        elo_ratings = [
+            self.elo_system.get_rating(i) for i in range(len(self.population))
+        ]
+
+        return elo_ratings
+
+    def _play_and_update_hand(self, all_indices: List[int]):
+        """
+        Play a single hand and update ELO ratings.
+
+        Args:
+            all_indices: List of 4 model indices for the hand
+        """
+        # Get models
+        models = [self.population[idx] for idx in all_indices]
+
+        # Play a single hand
+        hand_result = self.play_single_hand(models, all_indices)
+
+        # Determine winning and losing teams
+        team1_won = hand_result["team1_tricks"] >= 3
+        team1_indices = [all_indices[0], all_indices[2]]
+        team2_indices = [all_indices[1], all_indices[3]]
+
+        # Update ELO using head-to-head method (chess-style)
+        if team1_won:
+            self.elo_system.update_head_to_head(team1_indices, team2_indices)
+        else:
+            self.elo_system.update_head_to_head(team2_indices, team1_indices)
+
+    def _run_matchups_parallel(self, all_matchups: List[List[int]]):
+        """
+        Run matchups in parallel using ThreadPoolExecutor.
+
+        Args:
+            all_matchups: List of matchups (each is a list of 4 model indices)
+        """
+        import threading
+
+        # Create a lock for thread-safe ELO updates
+        elo_lock = threading.Lock()
+        completed = [0]  # Use list to allow modification in nested function
+
+        def play_matchup_batch(batch):
+            """Play a batch of matchups and collect results"""
+            results = []
+            for matchup_indices in batch:
+                # Get models
+                models = [self.population[idx] for idx in matchup_indices]
+
+                # Play a single hand
+                hand_result = self.play_single_hand(models, matchup_indices)
+
+                # Determine winning and losing teams
+                team1_won = hand_result["team1_tricks"] >= 3
+                team1_indices = [matchup_indices[0], matchup_indices[2]]
+                team2_indices = [matchup_indices[1], matchup_indices[3]]
+
+                results.append((team1_won, team1_indices, team2_indices))
+
+            # Update ELO ratings (thread-safe)
+            with elo_lock:
+                for team1_won, team1_indices, team2_indices in results:
+                    if team1_won:
+                        self.elo_system.update_head_to_head(
+                            team1_indices, team2_indices
+                        )
+                    else:
+                        self.elo_system.update_head_to_head(
+                            team2_indices, team1_indices
+                        )
+
+                completed[0] += len(batch)
+                if completed[0] % 100 == 0 or completed[0] == len(all_matchups):
+                    print(
+                        f"  Completed {completed[0]}/{len(all_matchups)} hands ({100*completed[0]//len(all_matchups)}%)"
+                    )
+
+        # Divide matchups into batches for workers
+        batch_size = max(1, len(all_matchups) // (self.num_workers * 4))
+        batches = [
+            all_matchups[i : i + batch_size]
+            for i in range(0, len(all_matchups), batch_size)
+        ]
+
+        print(f"  Running {len(batches)} batches with {self.num_workers} workers...")
+
+        # Run batches in parallel
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            futures = [executor.submit(play_matchup_batch, batch) for batch in batches]
+
+            # Wait for all to complete
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"  Error in matchup batch: {e}")
+                    import traceback
+
+                    traceback.print_exc()
 
     def evaluate_population_parallel(self) -> List[float]:
         """
@@ -913,6 +1226,10 @@ class GeneticAlgorithm:
         Returns:
             List of ELO ratings for each model
         """
+        # Use sampled round-robin if using champion_variations strategy
+        if self.evolution_strategy == "champion_variations":
+            return self.run_sampled_round_robin()
+
         # Reset ELO system for this generation
         self.elo_system.reset_ratings()
 
@@ -1135,17 +1452,46 @@ class GeneticAlgorithm:
         """
         for param in model.parameters():
             if random.random() < self.mutation_rate:
-                # Adaptive mutation strength based on temperature
-                # Lower temperature = smaller mutations (fine-tuning)
-                # Higher temperature = larger mutations (exploration)
-                mutation_strength = 0.05 * self.temperature  # Reduced from 0.1
+                # Use mutation_strength parameter for champion_variations
+                mutation_str = (
+                    self.mutation_strength
+                    if self.evolution_strategy == "champion_variations"
+                    else 0.05 * self.temperature
+                )
 
                 # Add Gaussian noise to weights
-                noise = torch.randn_like(param) * mutation_strength
+                noise = torch.randn_like(param) * mutation_str
                 param.data += noise
 
                 # Clip extreme values to prevent instability
                 param.data = torch.clamp(param.data, -10.0, 10.0)
+
+    def create_variations(
+        self, champion: BasicEuchreNN, count: int
+    ) -> List[BasicEuchreNN]:
+        """
+        Create variations of the champion model through mutation.
+
+        Used in champion_variations evolution strategy.
+
+        Args:
+            champion: The champion model to create variations from
+            count: Number of variations to create
+
+        Returns:
+            List of mutated variations
+        """
+        variations = []
+        for i in range(count):
+            # Create a copy of the champion
+            variation = copy.deepcopy(champion)
+
+            # Mutate it
+            self.mutate(variation)
+
+            variations.append(variation)
+
+        return variations
 
     def apply_diversity_boost(self, level: int):
         """
@@ -1163,13 +1509,9 @@ class GeneticAlgorithm:
             # Add random immigrants (10% of population)
             num_immigrants = max(1, int(self.population_size * 0.1))
             for i in range(num_immigrants):
-                if self.architecture_enabled:
-                    # Create transformer model (best performing architecture)
-                    new_model = ArchitectureRegistry.create_model(
-                        "transformer", self.use_cuda
-                    )
-                else:
-                    new_model = BasicEuchreNN(use_cuda=self.use_cuda)
+
+                # Create transformer model (best performing architecture)
+                new_model = ArchitectureRegistry.create_model(use_cuda=self.use_cuda)
 
                 # Replace a random non-elite member
                 replace_idx = random.randint(self.elite_size, len(self.population) - 1)
@@ -1190,7 +1532,7 @@ class GeneticAlgorithm:
                     idx = random.randint(self.elite_size, len(self.population) - 1)
                     # Create new transformer model (best performing architecture)
                     new_model = ArchitectureRegistry.create_model(
-                        "transformer", self.use_cuda
+                        use_cuda=self.use_cuda
                     )
                     self.population[idx] = new_model
 
@@ -1198,7 +1540,7 @@ class GeneticAlgorithm:
             # Level 3: Nuclear option (15+ generations stagnant)
             print(f"  💥 DIVERSITY BOOST LEVEL 3 (NUCLEAR):")
             print(f"     - Keeping only top 10% elite")
-            print(f"     - Generating 50% new transformer models")
+            print(f"     - Generating 50% new models")
             print(f"     - Resetting temperature to {self.initial_temperature}")
 
             # Keep only top 10%
@@ -1213,17 +1555,11 @@ class GeneticAlgorithm:
             # Generate 50% completely new transformer models
             new_count = int(self.population_size * 0.5)
             new_models = []
-            if self.architecture_enabled:
-                # Create transformer-only models (best performing architecture)
-                new_models = ArchitectureRegistry.create_population(
-                    new_count,
-                    architecture_distribution={"transformer": 1.0},
-                    use_cuda=self.use_cuda,
-                )
-            else:
-                new_models = [
-                    BasicEuchreNN(use_cuda=self.use_cuda) for _ in range(new_count)
-                ]
+
+            new_models = ArchitectureRegistry.create_population(
+                new_count,
+                use_cuda=self.use_cuda,
+            )
 
             # Fill remaining with mutated elites
             remaining = self.population_size - len(elites) - len(new_models)
@@ -1384,34 +1720,49 @@ class GeneticAlgorithm:
             if callback:
                 callback(generation + 1, self.global_best_elo, avg_elo)
 
-            # Keep elite - ALWAYS include global champion first
-            elites = []
-            if self.global_best_model is not None:
-                elites.append(copy.deepcopy(self.global_best_model))
-                print(f"  ✓ Global champion preserved in population")
+            # CHAMPION VARIATIONS STRATEGY: Single champion + variations
+            if self.evolution_strategy == "champion_variations":
+                # Keep the champion (best model)
+                champion = copy.deepcopy(current_best_model)
+                print(f"  ✓ Champion preserved (ELO: {current_best_elo:.0f})")
 
-            # Add remaining elites from current generation (avoid duplicates)
-            for model, elo in sorted_pop[: self.elite_size]:
-                if len(elites) < self.elite_size:
-                    elites.append(copy.deepcopy(model))
+                # Create variations of the champion
+                variations = self.create_variations(champion, self.population_size - 1)
 
-            # Select parents
-            parents = self.selection()
+                # New population = champion + variations
+                self.population = [champion] + variations
+                print(f"  Created {len(variations)} variations of champion")
 
-            # Create offspring
-            offspring = []
-            for i in range(0, len(parents), 2):
-                if i + 1 < len(parents):
-                    child1 = self.crossover(parents[i], parents[i + 1])
-                    child2 = self.crossover(parents[i + 1], parents[i])
-                    self.mutate(child1)
-                    self.mutate(child2)
-                    offspring.extend([child1, child2])
+            else:
+                # TRADITIONAL GENETIC ALGORITHM STRATEGY
+                # Keep elite - ALWAYS include global champion first
+                elites = []
+                if self.global_best_model is not None:
+                    elites.append(copy.deepcopy(self.global_best_model))
+                    print(f"  ✓ Global champion preserved in population")
 
-            # New population
-            self.population = (
-                elites + offspring[: self.population_size - self.elite_size]
-            )
+                # Add remaining elites from current generation (avoid duplicates)
+                for model, elo in sorted_pop[: self.elite_size]:
+                    if len(elites) < self.elite_size:
+                        elites.append(copy.deepcopy(model))
+
+                # Select parents
+                parents = self.selection()
+
+                # Create offspring
+                offspring = []
+                for i in range(0, len(parents), 2):
+                    if i + 1 < len(parents):
+                        child1 = self.crossover(parents[i], parents[i + 1])
+                        child2 = self.crossover(parents[i + 1], parents[i])
+                        self.mutate(child1)
+                        self.mutate(child2)
+                        offspring.extend([child1, child2])
+
+                # New population
+                self.population = (
+                    elites + offspring[: self.population_size - self.elite_size]
+                )
 
         # Return best model
         final_sorted = sorted(

@@ -17,11 +17,11 @@ class ArchitectureRegistry:
     """
 
     # Registry of available architectures
-    # NOTE: Only transformer enabled - basic and cnn disabled for better performance
+    # NOTE: Only basic enabled - has shown best results in training
     ARCHITECTURES: Dict[str, Type] = {
-        # "basic": BasicEuchreNN,  # Disabled - transformer performs better
-        # "cnn": CNNEuchreNN,           # Disabled - transformer performs better
-        "transformer": TransformerEuchreNN,
+        "basic": BasicEuchreNN,  # Enabled - best results
+        # "cnn": CNNEuchreNN,           # Disabled
+        # "transformer": TransformerEuchreNN,  # Disabled
     }
 
     # Architecture metadata
@@ -47,12 +47,13 @@ class ArchitectureRegistry:
     }
 
     @classmethod
-    def create_model(cls, architecture_type: str, use_cuda: bool = True):
+    def create_model(cls, architecture_type: str | None = None, use_cuda: bool = True):
         """
         Create a model of the specified architecture type.
 
         Args:
             architecture_type: Type of architecture ('basic', 'cnn', 'transformer')
+                             If None, randomly selects an architecture
             use_cuda: Whether to use CUDA if available
 
         Returns:
@@ -61,11 +62,10 @@ class ArchitectureRegistry:
         Raises:
             ValueError: If architecture type is not recognized
         """
-        if architecture_type not in cls.ARCHITECTURES:
-            raise ValueError(
-                f"Unknown architecture type: {architecture_type}. "
-                f"Available: {list(cls.ARCHITECTURES.keys())}"
-            )
+        if architecture_type is None:
+            architecture_type = random.choice(list(cls.ARCHITECTURES.keys()))
+        elif architecture_type not in cls.ARCHITECTURES:
+            architecture_type = random.choice(list(cls.ARCHITECTURES.keys()))
 
         model_class = cls.ARCHITECTURES[architecture_type]
         return model_class(use_cuda=use_cuda)

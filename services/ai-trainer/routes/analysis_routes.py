@@ -37,6 +37,42 @@ def analyze_trump_strategy(model_id):
         suit_names = {"C": "Clubs", "D": "Diamonds", "H": "Hearts", "S": "Spades"}
         opposite_suit = {"C": "S", "S": "C", "D": "H", "H": "D"}
 
+        # Initialize position stats with avg_confidence tracking
+        position_stats = {
+            "0": {
+                "name": "1st (Left of Dealer)",
+                "calls": 0,
+                "passes": 0,
+                "total": 0,
+                "total_confidence": 0.0,
+                "avg_confidence": 0.0,
+            },
+            "1": {
+                "name": "2nd",
+                "calls": 0,
+                "passes": 0,
+                "total": 0,
+                "total_confidence": 0.0,
+                "avg_confidence": 0.0,
+            },
+            "2": {
+                "name": "3rd",
+                "calls": 0,
+                "passes": 0,
+                "total": 0,
+                "total_confidence": 0.0,
+                "avg_confidence": 0.0,
+            },
+            "3": {
+                "name": "Dealer",
+                "calls": 0,
+                "passes": 0,
+                "total": 0,
+                "total_confidence": 0.0,
+                "avg_confidence": 0.0,
+            },
+        }
+
         for trump_suit in suits:
             left_suit = opposite_suit[trump_suit]
 
@@ -282,6 +318,9 @@ def analyze_trump_strategy(model_id):
         for i in range(6):
             results["trump_count_stats"][str(i)] = {"calls": 0, "passes": 0, "total": 0}
 
+        # Update results to use the initialized position_stats
+        results["position_stats"] = position_stats
+
         # Run each scenario at each position
         for scenario in scenarios:
             for position in range(4):
@@ -306,6 +345,9 @@ def analyze_trump_strategy(model_id):
                 is_call = decision_idx != 4
                 called_suit = ["C", "D", "H", "S", "PASS"][decision_idx]
 
+                # Get confidence (probability of chosen decision)
+                confidence = float(probs[decision_idx])
+
                 # Update statistics
                 results["total_scenarios"] += 1
                 pos_key = str(position)
@@ -315,6 +357,7 @@ def analyze_trump_strategy(model_id):
                 else:
                     results["position_stats"][pos_key]["passes"] += 1
                 results["position_stats"][pos_key]["total"] += 1
+                results["position_stats"][pos_key]["total_confidence"] += confidence
 
                 # Category stats
                 cat = scenario["category"]
@@ -349,7 +392,7 @@ def analyze_trump_strategy(model_id):
                     results["trump_count_stats"][tc_key]["passes"] += 1
                 results["trump_count_stats"][tc_key]["total"] += 1
 
-                # Detailed result with confidence
+                # Detailed result with confidence (already as percentage 0-100)
                 results["detailed_results"].append(
                     {
                         "hand": scenario["hand"],
@@ -358,7 +401,9 @@ def analyze_trump_strategy(model_id):
                         "position_name": results["position_stats"][pos_key]["name"],
                         "decision": "CALL" if is_call else "PASS",
                         "called_suit": called_suit,
-                        "confidence": round(float(probs[decision_idx]) * 100, 1),
+                        "confidence": round(
+                            confidence * 100, 1
+                        ),  # Convert to percentage
                         "category": cat,
                         "description": scenario["description"],
                         "trump_count": scenario["trump_count"],
@@ -367,11 +412,14 @@ def analyze_trump_strategy(model_id):
                     }
                 )
 
-        # Calculate percentages
+        # Calculate percentages and average confidence
         for pos_key in results["position_stats"]:
             stats = results["position_stats"][pos_key]
             if stats["total"] > 0:
                 stats["call_rate"] = round(stats["calls"] / stats["total"] * 100, 1)
+                stats["avg_confidence"] = stats["total_confidence"] / stats["total"]
+            # Remove total_confidence from output (internal calculation only)
+            del stats["total_confidence"]
 
         for cat in results["category_stats"]:
             stats = results["category_stats"][cat]
