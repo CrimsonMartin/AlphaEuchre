@@ -11,12 +11,12 @@ set -e
 # Configuration
 CONTAINER_NAME="euchre-ai-trainer"
 NUM_UPDATES=50  # Quick test runs
-ARCHITECTURE="cnn"
 # ARCHITECTURE="basic"
-# ARCHITECTURE="transformer"
+# ARCHITECTURE="cnn"
+ARCHITECTURE="transformer"
 
 # Output file
-RESULTS_FILE="hyperparameter_results.txt"
+RESULTS_FILE="hyperparameter_results-${ARCHITECTURE}.txt"
 echo "Hyperparameter Search Results - $(date)" > $RESULTS_FILE
 echo "========================================" >> $RESULTS_FILE
 echo "" >> $RESULTS_FILE
