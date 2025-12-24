@@ -333,11 +333,7 @@ Examples:
 
                 # Progress indicator
                 if (game_num + 1) % 10 == 0:
-                    print(
-                        f"\r  {game_num + 1}/{args.batch_size} games complete",
-                        end="",
-                        flush=True,
-                    )
+                    print(f"{game_num + 1}/{args.batch_size} games complete")
 
             if shutdown_requested:
                 break

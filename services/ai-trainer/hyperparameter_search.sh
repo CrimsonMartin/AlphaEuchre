@@ -95,8 +95,8 @@ echo "=========================================="
 echo ""
 
 # Test learning rates (keeping other params constant)
-for lr in 0.0001 0.00005 0.00001; do
-    run_experiment 100 $lr 0.1 0.95
+for learning_rate in 0.0001 0.00005 0.00001 0.000005; do
+    run_experiment 100 $learning_rate 0.1 0.95
 done
 
 echo -e "${GREEN}Phase 2: Testing Different Batch Sizes${NC}"
@@ -104,8 +104,8 @@ echo "=========================================="
 echo ""
 
 # Test batch sizes (using best LR from phase 1 - adjust if needed)
-for bs in 50 100 200; do
-    run_experiment $bs 0.00005 0.1 0.95
+for batch_size in 50 100 200; do
+    run_experiment $batch_size 0.00005 0.1 0.95
 done
 
 echo -e "${GREEN}Phase 3: Testing Different Exploration Rates${NC}"
@@ -113,8 +113,8 @@ echo "=========================================="
 echo ""
 
 # Test exploration rates
-for er in 0.05 0.1 0.15; do
-    run_experiment 100 0.00005 $er 0.95
+for exploration in 0.05 0.1 0.15; do
+    run_experiment 100 0.00005 $exploration 0.95
 done
 
 echo -e "${GREEN}Phase 4: Testing Different Gamma Values${NC}"

@@ -337,7 +337,17 @@ class PolicyGradientTrainer:
                 # Execute decision
                 if decision_idx == 4:
                     try:
-                        game.pass_trump()
+                        result = game.pass_trump()
+                        # Check if everyone passed (hand_over)
+                        if result == "hand_over":
+                            # Apply penalty for not calling trump
+                            hand_reward = -0.01
+                            episode.hand_rewards[0].append(hand_reward)
+                            episode.hand_rewards[2].append(hand_reward)
+                            # Start new hand
+                            if game.state.phase != GamePhase.GAME_OVER:
+                                game.start_new_hand()
+                            continue
                     except:
                         if game.state.turned_up_card:
                             game.call_trump(game.state.turned_up_card.suit)
@@ -430,7 +440,27 @@ class PolicyGradientTrainer:
 
                 # Execute decision
                 if decision_idx == 4:
-                    if is_dealer:
+                    # Pass trump
+                    try:
+                        result = game.pass_trump()
+                        # Check if everyone passed (hand_over)
+                        if result == "hand_over":
+                            # Apply penalty for not calling trump
+                            hand_reward = -0.05
+                            episode.hand_rewards[0].append(hand_reward)
+                            episode.hand_rewards[2].append(hand_reward)
+                            # Reset hand info
+                            current_hand_info = {
+                                "caller_position": None,
+                                "calling_team": None,
+                                "tricks_won_by_pos": {0: 0, 1: 0, 2: 0, 3: 0},
+                            }
+                            # Start new hand
+                            if game.state.phase != GamePhase.GAME_OVER:
+                                game.start_new_hand()
+                            continue
+                    except:
+                        # Fallback if pass fails
                         available_suits = [
                             s
                             for s in [
@@ -449,27 +479,6 @@ class PolicyGradientTrainer:
                         current_hand_info["was_forced_call"] = True
                         if is_model_position:
                             episode.trump_calls[current_pos] += 1
-                    else:
-                        try:
-                            game.pass_trump()
-                        except:
-                            available_suits = [
-                                s
-                                for s in [
-                                    Suit.CLUBS,
-                                    Suit.DIAMONDS,
-                                    Suit.HEARTS,
-                                    Suit.SPADES,
-                                ]
-                                if s != turned_up_suit
-                            ]
-                            game.call_trump(random.choice(available_suits))
-                            current_hand_info["caller_position"] = current_pos
-                            current_hand_info["calling_team"] = (
-                                1 if current_pos in [0, 2] else 2
-                            )
-                            if is_model_position:
-                                episode.trump_calls[current_pos] += 1
                 else:
                     suit_map = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
                     selected_suit = suit_map[decision_idx]

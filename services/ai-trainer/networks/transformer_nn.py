@@ -44,10 +44,10 @@ class TransformerEuchreNN(nn.Module):
         card_output_size=24,
         trump_output_size=5,  # 4 suits + pass
         discard_output_size=24,
-        d_model=32,
-        nhead=4,
+        d_model=64,
+        nhead=8,
         num_layers=2,
-        dim_feedforward=32,
+        dim_feedforward=256,
         use_cuda=True,
     ):
         super(TransformerEuchreNN, self).__init__()
@@ -90,7 +90,9 @@ class TransformerEuchreNN(nn.Module):
         )
 
         # Trump Selection Head - smaller transformer
-        self.trump_input_projection = nn.Linear(37, d_model // 2)
+        self.trump_input_projection = nn.Linear(
+            49, d_model // 2
+        )  # Updated to match encode_trump_state output (49 features)
         self.trump_pos_encoder = PositionalEncoding(d_model // 2)
 
         trump_encoder_layer = nn.TransformerEncoderLayer(

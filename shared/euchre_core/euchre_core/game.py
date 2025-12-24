@@ -178,21 +178,17 @@ class EuchreGame:
         self.state.current_player_position = (self.state.dealer_position + 1) % 4
         self.state.phase = GamePhase.TRUMP_SELECTION_ROUND1
 
-    def pass_trump(self) -> bool:
+    def pass_trump(self):
         """
         Current player passes on calling trump.
         Returns True if round advances, False if still in same round.
+        Returns 'hand_over' if everyone passes (no stick-the-dealer).
         """
         if self.state.phase not in [
             GamePhase.TRUMP_SELECTION_ROUND1,
             GamePhase.TRUMP_SELECTION_ROUND2,
         ]:
             raise ValueError("Not in trump selection phase")
-
-        # Check if dealer is forced to call (stick the dealer)
-        if self.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
-            if self.state.current_player_position == self.state.dealer_position:
-                raise ValueError("Dealer cannot pass in round 2 (stick the dealer)")
 
         self.state.next_player()
 
@@ -203,6 +199,12 @@ class EuchreGame:
                 # Move to round 2
                 self.state.phase = GamePhase.TRUMP_SELECTION_ROUND2
                 return True
+            else:
+                # Round 2 complete - everyone passed, hand is over
+                # Move dealer and start new hand
+                self.state.dealer_position = (self.state.dealer_position + 1) % 4
+                self.state.phase = GamePhase.HAND_COMPLETE
+                return "hand_over"
 
         return False
 
