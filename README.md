@@ -1,6 +1,8 @@
-# 🃏 EuchreBot
+# AlphaEuchre
 
-An AI-powered Euchre simulator with neural network training, genetic algorithms, and multiple interfaces for playing and analyzing the classic card game.
+Euchre strategy by exclusively reinforcement learning, because why not.
+
+Everything below written by AI, so read at your own risk:
 
 ## 🎯 Features
 
