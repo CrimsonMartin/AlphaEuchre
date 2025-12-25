@@ -244,8 +244,8 @@ class PolicyGradientTrainer:
 
     def play_game(self) -> Episode:
         """
-        Play a single game with the model as partners (positions 0 & 2).
-        Opponents (positions 1 & 3) are either random AI or a frozen self-play model.
+        Play a single game with the model controlling all 4 positions (self-play).
+        Each position learns from its own perspective.
 
         Per-decision rewards are tracked so each decision gets credit for
         outcomes it directly influenced (not a flat global return).
@@ -286,7 +286,6 @@ class PolicyGradientTrainer:
         # Play until game over
         while game.state.phase != GamePhase.GAME_OVER:
             current_pos = game.state.current_player_position
-            is_model_position = current_pos in [0, 2]
 
             # Handle different game phases
             if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND1:
@@ -315,24 +314,13 @@ class PolicyGradientTrainer:
                 else:
                     valid_trump_indices = [4]
 
-                if is_model_position:
-                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
-                        trump_state, valid_trump_indices, "trump"
-                    )
-                    episode.trump_decisions.append(
-                        (trump_state, decision_idx, log_prob, entropy, current_pos)
-                    )
-                    episode.trump_rewards.append(0.0)
-                else:
-                    decision_idx = self._opponent_select_action(
-                        opponent, trump_state, valid_trump_indices, "trump"
-                    )
-
-                # Track hand cards for reward shaping if model calls
-                hand_cards_for_shaping = None
-                if is_model_position and decision_idx != 4:
-                    gs = game.get_state(perspective_position=current_pos)
-                    hand_cards_for_shaping = gs.get("hand", [])
+                # Model makes decision for all positions
+                decision_idx, log_prob = self.select_action_with_exploration(
+                    trump_state, valid_trump_indices, "trump"
+                )
+                episode.trump_decisions.append(
+                    (trump_state, decision_idx, log_prob, current_pos)
+                )
 
                 # Execute decision
                 if decision_idx == 4:
@@ -340,10 +328,10 @@ class PolicyGradientTrainer:
                         result = game.pass_trump()
                         # Check if everyone passed (hand_over)
                         if result == "hand_over":
-                            # Apply penalty for not calling trump
-                            hand_reward = -0.01
-                            episode.hand_rewards[0].append(hand_reward)
-                            episode.hand_rewards[2].append(hand_reward)
+                            # Apply penalty for not calling trump to ALL positions
+                            hand_reward = -0.05
+                            for pos in range(4):
+                                episode.hand_rewards[pos].append(hand_reward)
                             # Start new hand
                             if game.state.phase != GamePhase.GAME_OVER:
                                 game.start_new_hand()
@@ -355,8 +343,7 @@ class PolicyGradientTrainer:
                             current_hand_info["calling_team"] = (
                                 1 if current_pos in [0, 2] else 2
                             )
-                            if is_model_position:
-                                episode.trump_calls[current_pos] += 1
+                            episode.trump_calls[current_pos] += 1
                 else:
                     try:
                         if game.state.turned_up_card:
@@ -365,20 +352,17 @@ class PolicyGradientTrainer:
                             current_hand_info["calling_team"] = (
                                 1 if current_pos in [0, 2] else 2
                             )
-                            # Reward shaping: hand strength bonus for calling
-                            if is_model_position and hand_cards_for_shaping:
-                                suit_char = str(game.state.turned_up_card)[-1]
-                                strength = self.compute_hand_strength(
-                                    hand_cards_for_shaping, suit_char
-                                )
-                                episode.trump_rewards[-1] += strength * 0.03
-                                current_hand_info["calling_trump_suit_char"] = suit_char
-                                current_hand_info["calling_hand_cards"] = hand_cards_for_shaping
-                            if is_model_position:
-                                episode.trump_calls[current_pos] += 1
+                            episode.trump_calls[current_pos] += 1
                     except:
                         try:
-                            game.pass_trump()
+                            result = game.pass_trump()
+                            if result == "hand_over":
+                                hand_reward = -0.05
+                                for pos in range(4):
+                                    episode.hand_rewards[pos].append(hand_reward)
+                                if game.state.phase != GamePhase.GAME_OVER:
+                                    game.start_new_hand()
+                                continue
                         except:
                             if game.state.turned_up_card:
                                 game.call_trump(game.state.turned_up_card.suit)
@@ -386,8 +370,7 @@ class PolicyGradientTrainer:
                                 current_hand_info["calling_team"] = (
                                     1 if current_pos in [0, 2] else 2
                                 )
-                                if is_model_position:
-                                    episode.trump_calls[current_pos] += 1
+                                episode.trump_calls[current_pos] += 1
 
             elif game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
                 game_state_dict = game.get_state(perspective_position=current_pos)
@@ -419,24 +402,13 @@ class PolicyGradientTrainer:
                 if not is_dealer:
                     valid_trump_indices.append(4)
 
-                if is_model_position:
-                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
-                        trump_state, valid_trump_indices, "trump"
-                    )
-                    episode.trump_decisions.append(
-                        (trump_state, decision_idx, log_prob, entropy, current_pos)
-                    )
-                    episode.trump_rewards.append(0.0)
-                else:
-                    decision_idx = self._opponent_select_action(
-                        opponent, trump_state, valid_trump_indices, "trump"
-                    )
-
-                # Track hand cards for reward shaping if model calls
-                hand_cards_r2 = None
-                if is_model_position and decision_idx != 4:
-                    gs = game.get_state(perspective_position=current_pos)
-                    hand_cards_r2 = gs.get("hand", [])
+                # Model makes decision for all positions
+                decision_idx, log_prob = self.select_action_with_exploration(
+                    trump_state, valid_trump_indices, "trump"
+                )
+                episode.trump_decisions.append(
+                    (trump_state, decision_idx, log_prob, current_pos)
+                )
 
                 # Execute decision
                 if decision_idx == 4:
@@ -445,10 +417,10 @@ class PolicyGradientTrainer:
                         result = game.pass_trump()
                         # Check if everyone passed (hand_over)
                         if result == "hand_over":
-                            # Apply penalty for not calling trump
+                            # Apply penalty for not calling trump to ALL positions
                             hand_reward = -0.05
-                            episode.hand_rewards[0].append(hand_reward)
-                            episode.hand_rewards[2].append(hand_reward)
+                            for pos in range(4):
+                                episode.hand_rewards[pos].append(hand_reward)
                             # Reset hand info
                             current_hand_info = {
                                 "caller_position": None,
@@ -476,9 +448,7 @@ class PolicyGradientTrainer:
                         current_hand_info["calling_team"] = (
                             1 if current_pos in [0, 2] else 2
                         )
-                        current_hand_info["was_forced_call"] = True
-                        if is_model_position:
-                            episode.trump_calls[current_pos] += 1
+                        episode.trump_calls[current_pos] += 1
                 else:
                     suit_map = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
                     selected_suit = suit_map[decision_idx]
@@ -489,14 +459,7 @@ class PolicyGradientTrainer:
                         current_hand_info["calling_team"] = (
                             1 if current_pos in [0, 2] else 2
                         )
-                        # Reward shaping: hand strength bonus for round 2 call
-                        if is_model_position and hand_cards_r2:
-                            suit_char_map = {Suit.CLUBS: "C", Suit.DIAMONDS: "D", Suit.HEARTS: "H", Suit.SPADES: "S"}
-                            sc = suit_char_map.get(selected_suit, "")
-                            strength = self.compute_hand_strength(hand_cards_r2, sc)
-                            episode.trump_rewards[-1] += strength * 0.03
-                        if is_model_position:
-                            episode.trump_calls[current_pos] += 1
+                        episode.trump_calls[current_pos] += 1
                     else:
                         available_suits = [
                             s
@@ -514,20 +477,29 @@ class PolicyGradientTrainer:
                             current_hand_info["calling_team"] = (
                                 1 if current_pos in [0, 2] else 2
                             )
-                            current_hand_info["was_forced_call"] = True
-                            if is_model_position:
-                                episode.trump_calls[current_pos] += 1
+                            episode.trump_calls[current_pos] += 1
                         else:
                             try:
-                                game.pass_trump()
+                                result = game.pass_trump()
+                                if result == "hand_over":
+                                    hand_reward = -0.05
+                                    for pos in range(4):
+                                        episode.hand_rewards[pos].append(hand_reward)
+                                    current_hand_info = {
+                                        "caller_position": None,
+                                        "calling_team": None,
+                                        "tricks_won_by_pos": {0: 0, 1: 0, 2: 0, 3: 0},
+                                    }
+                                    if game.state.phase != GamePhase.GAME_OVER:
+                                        game.start_new_hand()
+                                    continue
                             except:
                                 game.call_trump(random.choice(available_suits))
                                 current_hand_info["caller_position"] = current_pos
                                 current_hand_info["calling_team"] = (
                                     1 if current_pos in [0, 2] else 2
                                 )
-                                if is_model_position:
-                                    episode.trump_calls[current_pos] += 1
+                                episode.trump_calls[current_pos] += 1
 
             elif game.state.phase == GamePhase.DEALER_DISCARD:
                 dealer = game.state.get_player(game.state.dealer_position)
@@ -543,24 +515,16 @@ class PolicyGradientTrainer:
                     if card_str in self.all_cards:
                         valid_discard_indices.append(self.all_cards.index(card_str))
 
-                if is_model_position:
-                    if valid_discard_indices:
-                        card_idx, log_prob, entropy = self.select_action_with_exploration(
-                            discard_state, valid_discard_indices, "discard"
-                        )
-                        episode.discard_decisions.append(
-                            (discard_state, card_idx, log_prob, entropy, current_pos)
-                        )
-                        episode.discard_rewards.append(0.0)
-                    else:
-                        card_idx = 0
+                # Model makes decision for all positions (including dealer)
+                if valid_discard_indices:
+                    card_idx, log_prob = self.select_action_with_exploration(
+                        discard_state, valid_discard_indices, "discard"
+                    )
+                    episode.discard_decisions.append(
+                        (discard_state, card_idx, log_prob, game.state.dealer_position)
+                    )
                 else:
-                    if valid_discard_indices:
-                        card_idx = self._opponent_select_action(
-                            opponent, discard_state, valid_discard_indices, "discard"
-                        )
-                    else:
-                        card_idx = 0
+                    card_idx = 0
 
                 predicted_card_str = (
                     self.all_cards[card_idx] if card_idx < len(self.all_cards) else None
@@ -590,26 +554,16 @@ class PolicyGradientTrainer:
                         if card_str in self.all_cards:
                             valid_card_indices.append(self.all_cards.index(card_str))
 
-                    if is_model_position:
-                        if valid_card_indices:
-                            card_idx, log_prob, entropy = self.select_action_with_exploration(
-                                state_encoding, valid_card_indices, "card"
-                            )
-                            episode.card_decisions.append(
-                                (state_encoding, card_idx, log_prob, entropy, current_pos)
-                            )
-                            # Card decisions start with 0 reward; trick outcome
-                            # is assigned immediately when the trick completes
-                            episode.card_rewards.append(0.0)
-                        else:
-                            card_idx = 0
+                    # Model makes decision for all positions
+                    if valid_card_indices:
+                        card_idx, log_prob = self.select_action_with_exploration(
+                            state_encoding, valid_card_indices, "card"
+                        )
+                        episode.card_decisions.append(
+                            (state_encoding, card_idx, log_prob, current_pos)
+                        )
                     else:
-                        if valid_card_indices:
-                            card_idx = self._opponent_select_action(
-                                opponent, state_encoding, valid_card_indices, "card"
-                            )
-                        else:
-                            card_idx = 0
+                        card_idx = 0
 
                     predicted_card_str = (
                         self.all_cards[card_idx]
@@ -629,76 +583,55 @@ class PolicyGradientTrainer:
 
                     result = game.play_card(selected_card)
 
-                    # TRICK-LEVEL REWARDS: assign to card decisions in this trick
+                    # TRICK-LEVEL REWARDS - Give to each position from their perspective
                     if result.get("trick_complete"):
                         winner_pos = result["trick_winner"]
                         current_hand_info["tricks_won_by_pos"][winner_pos] += 1
 
-                        if winner_pos in [0, 2]:  # Model's team won trick
-                            # Differentiate: direct win vs partner win
-                            if winner_pos == current_pos:
-                                trick_reward = 0.05  # I won the trick
-                            else:
-                                trick_reward = 0.025  # Partner won (coordination signal)
-                        else:
-                            trick_reward = -0.02
+                        # Reward for winning trick (from each team's perspective)
+                        for pos in range(4):
+                            if (pos % 2) == (winner_pos % 2):  # Same team
+                                trick_reward = 0.02
+                                # Bonus if this team called trump
+                                if current_hand_info["calling_team"] == (
+                                    1 if pos % 2 == 0 else 2
+                                ):
+                                    trick_reward += 0.01
+                                episode.trick_rewards[pos].append(trick_reward)
 
-                        # Assign trick reward to recent model card decisions
-                        for i in range(len(episode.card_rewards) - 1, hand_card_start_idx - 1, -1):
-                            if i >= 0 and i < len(episode.card_rewards):
-                                episode.card_rewards[i] += trick_reward
-
-                    # HAND-LEVEL REWARDS
+                    # Check if hand complete
                     if result.get("hand_complete"):
+                        # HAND-LEVEL REWARDS - Give to each position from their perspective
                         hand_winner = result["hand_winner"]
                         winning_team = hand_winner["winning_team"]
                         points_awarded = hand_winner["points_awarded"]
                         calling_team = current_hand_info["calling_team"]
 
-                        # Balanced rewards: calling is not punished more than
-                        # it is rewarded. The key insight is that in Euchre,
-                        # you MUST call sometimes (dealer is forced), so the
-                        # reward for a successful call should be >= the penalty
-                        # for being euchred, weighted by probability.
-                        if calling_team == 1:  # Model's team called
-                            if winning_team == 1:
-                                if points_awarded == 2:
-                                    hand_reward = 0.40  # March - big reward
+                        for pos in range(4):
+                            pos_team = 1 if pos % 2 == 0 else 2
+
+                            if calling_team == pos_team:  # This position's team called
+                                if winning_team == pos_team:
+                                    # Team won
+                                    if points_awarded == 2:
+                                        hand_reward = 0.25  # March
+                                    else:
+                                        hand_reward = 0.10  # Made it
                                 else:
-                                    hand_reward = 0.20  # Made it
+                                    # Got euchred
+                                    hand_reward = -0.30
+                                    episode.euchres[pos] += 1
+                            elif calling_team is not None:  # Opponent called
+                                if winning_team == pos_team:
+                                    # Successfully defended
+                                    hand_reward = 0.30  # Euchred opponent
+                                else:
+                                    # Opponent made it
+                                    hand_reward = -0.15
                             else:
-                                hand_reward = -0.25  # Euchred (reduced from -0.30)
-                                episode.euchres[0] += 1
-                                episode.euchres[2] += 1
-                        elif calling_team == 2:  # Opponent called
-                            if winning_team == 1:
-                                hand_reward = 0.20  # Euchred opponent (reduced from 0.30)
-                            else:
-                                hand_reward = -0.10  # Opponent made it
-                        else:
-                            hand_reward = 0.0
+                                hand_reward = 0.0
 
-                        # Assign hand reward to all model decisions in this hand
-                        # Trump caller gets full reward; partner's card plays
-                        # get attenuated reward (0.7x) since they didn't make
-                        # the calling decision - helps disentangle team credit
-                        caller_pos = current_hand_info["caller_position"]
-                        for i in range(hand_trump_start_idx, len(episode.trump_rewards)):
-                            episode.trump_rewards[i] += hand_reward
-                        for i in range(hand_card_start_idx, len(episode.card_rewards)):
-                            _, _, _, _, pos = episode.card_decisions[i]
-                            if calling_team == 1 and pos != caller_pos and caller_pos in [0, 2]:
-                                # Partner's card play, attenuate
-                                episode.card_rewards[i] += hand_reward * 0.7
-                            else:
-                                episode.card_rewards[i] += hand_reward
-                        for i in range(hand_discard_start_idx, len(episode.discard_rewards)):
-                            episode.discard_rewards[i] += hand_reward
-
-                        # Update hand boundary indices for next hand
-                        hand_card_start_idx = len(episode.card_rewards)
-                        hand_trump_start_idx = len(episode.trump_rewards)
-                        hand_discard_start_idx = len(episode.discard_rewards)
+                            episode.hand_rewards[pos].append(hand_reward)
 
                         # Reset hand info
                         current_hand_info = {
@@ -717,10 +650,22 @@ class PolicyGradientTrainer:
             elif game.state.phase == GamePhase.HAND_COMPLETE:
                 game.start_new_hand()
 
-        # GAME-LEVEL REWARD (score differential, applied to all decisions)
+        # GAME-LEVEL REWARD (score differential from each position's perspective)
         episode.team1_score = game.state.team1_score
         episode.team2_score = game.state.team2_score
-        episode.game_reward = (game.state.team1_score - game.state.team2_score) / 10.0
+
+        # Team 1 perspective (positions 0, 2)
+        team1_reward = (game.state.team1_score - game.state.team2_score) / 10.0
+        # Team 2 perspective (positions 1, 3)
+        team2_reward = (game.state.team2_score - game.state.team1_score) / 10.0
+
+        episode.game_reward = team1_reward  # For statistics (team 1 perspective)
+
+        # Track statistics
+        for pos in range(4):
+            episode.tricks_won[pos] = sum(
+                current_hand_info["tricks_won_by_pos"].get(pos, 0) for _ in range(1)
+            )
 
         return episode
 
@@ -745,13 +690,17 @@ class PolicyGradientTrainer:
     def train_on_batch(self, episodes: List[Episode]) -> Dict[str, float]:
         """
         Train the model on a batch of episodes using policy gradient.
+        Now processes all 4 positions with their own perspective.
 
-        Key fixes over the original:
-        1. Per-decision returns with proper temporal credit assignment
-        2. Actual entropy regularization (not dead code)
-        3. Per-decision-type baselines for better variance reduction
-        4. Advantage normalization to stabilize training
+        Args:
+            episodes: List of Episode objects
+
+        Returns:
+            Dictionary with training statistics
         """
+        # Collect all decisions and their returns
+        card_states = []
+        card_actions = []
         card_log_probs = []
         card_entropies = []
         card_returns = []
@@ -765,38 +714,53 @@ class PolicyGradientTrainer:
         discard_returns = []
 
         total_reward = 0.0
-        total_wins = 0
+        total_games_played = len(episodes)
 
         for episode in episodes:
+            # Compute total reward for this episode (from team 1 perspective for stats)
             game_reward = episode.game_reward
             total_reward += game_reward
 
-            if game_reward > 0:
-                total_wins += 1
+            # Compute rewards for ALL 4 positions from their own perspective
+            all_rewards_by_pos = {}
+            for pos in range(4):
+                pos_team = 1 if pos % 2 == 0 else 2
+                # Game reward from this position's perspective
+                if pos_team == 1:
+                    pos_game_reward = (episode.team1_score - episode.team2_score) / 10.0
+                else:
+                    pos_game_reward = (episode.team2_score - episode.team1_score) / 10.0
 
-            # Card decisions: each has its own reward (trick + hand outcome)
-            # plus discounted game reward. Compute returns from per-decision
-            # reward sequence so later decisions get less game-level discount.
-            card_reward_seq = [r + game_reward for r in episode.card_rewards]
-            card_ret = self.compute_returns(card_reward_seq, self.gamma)
+                all_rewards_by_pos[pos] = (
+                    list(episode.trick_rewards[pos])
+                    + list(episode.hand_rewards[pos])
+                    + [pos_game_reward]
+                )
+
+            # Process card decisions for all positions
+            for state, action, log_prob, pos in episode.card_decisions:
+                rewards = all_rewards_by_pos[pos]
+                returns = self.compute_returns(rewards, self.gamma)
 
             for i, (state, action, log_prob, entropy, pos) in enumerate(episode.card_decisions):
                 card_log_probs.append(log_prob)
                 card_entropies.append(entropy)
                 card_returns.append(card_ret[i] if i < len(card_ret) else game_reward)
 
-            # Trump decisions: reward is hand outcome + game reward
-            trump_reward_seq = [r + game_reward for r in episode.trump_rewards]
-            trump_ret = self.compute_returns(trump_reward_seq, self.gamma)
+            # Process trump decisions for all positions
+            for state, action, log_prob, pos in episode.trump_decisions:
+                rewards = all_rewards_by_pos[pos]
+                returns = self.compute_returns(rewards, self.gamma)
 
             for i, (state, action, log_prob, entropy, pos) in enumerate(episode.trump_decisions):
                 trump_log_probs.append(log_prob)
                 trump_entropies.append(entropy)
                 trump_returns.append(trump_ret[i] if i < len(trump_ret) else game_reward)
 
-            # Discard decisions
-            discard_reward_seq = [r + game_reward for r in episode.discard_rewards]
-            discard_ret = self.compute_returns(discard_reward_seq, self.gamma)
+            # Process discard decisions for all positions
+            for state, action, log_prob, pos in episode.discard_decisions:
+                rewards = all_rewards_by_pos[pos]
+                returns = self.compute_returns(rewards, self.gamma)
 
             for i, (state, action, log_prob, entropy, pos) in enumerate(episode.discard_decisions):
                 discard_log_probs.append(log_prob)
@@ -899,13 +863,12 @@ class PolicyGradientTrainer:
 
         # Update statistics
         self.total_games += len(episodes)
-        self.total_wins += total_wins
         self.avg_reward = total_reward / len(episodes)
 
         return {
             "loss": total_loss.item(),
             "avg_reward": self.avg_reward,
-            "win_rate": total_wins / len(episodes),
+            "avg_score_diff": self.avg_reward,  # Average score differential (self-play)
             "running_reward": self.running_reward,
             "entropy": total_entropy.item(),
             "critic_loss": critic_loss.item() if self.critic is not None else 0.0,

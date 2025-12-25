@@ -365,13 +365,12 @@ Examples:
             print(f"\n  Update {update} Results:")
             print(f"    Loss:            {stats['loss']:.4f}")
             print(f"    Avg Reward:      {stats['avg_reward']:.4f}")
-            print(f"    Win Rate:        {stats['win_rate']:.2%}")
+            print(f"    Avg Score Diff:  {stats['avg_score_diff']:.4f}")
             print(f"    Running Reward:  {stats['running_reward']:.4f}")
             print(f"    Entropy:         {stats.get('entropy', 0.0):.4f}")
             print(f"    Trump Call Rate: {trump_call_rate:.1%} ({total_hands_called}/{total_trump_opportunities})")
             print(f"    Euchre Rate:     {euchre_rate:.1%} ({total_euchres}/{total_hands_called} calls)")
             print(f"    Total Games:     {trainer.total_games}")
-            print(f"    Total Wins:      {trainer.total_wins}")
             print()
 
             # Update database
@@ -399,7 +398,7 @@ Examples:
                         update,
                         stats["running_reward"],
                         stats["avg_reward"],
-                        f"Update {update}: Reward = {stats['avg_reward']:.4f}, Win Rate = {stats['win_rate']:.2%}",
+                        f"Update {update}: Reward = {stats['avg_reward']:.4f}, Score Diff = {stats['avg_score_diff']:.4f}",
                     ),
                 )
 
@@ -413,9 +412,9 @@ Examples:
             if update % args.save_every == 0 or update == args.num_updates:
                 print(f"  💾 Saving model (update {update})...")
 
-                # Estimate ELO based on win rate (rough approximation)
-                # Win rate of 50% = 1500 ELO, each 10% = ~100 ELO
-                estimated_elo = 1500 + (stats["win_rate"] - 0.5) * 1000
+                # For self-play, ELO is based on average reward (score differential)
+                # Positive avg_reward means model is improving
+                estimated_elo = 1500 + (stats["avg_reward"] * 100)
 
                 model_id = model_manager.save_model(
                     model,
@@ -447,9 +446,8 @@ Examples:
     print("Training Complete - Saving Final Model")
     print("=" * 70)
 
-    estimated_elo = (
-        1500 + (trainer.total_wins / max(1, trainer.total_games) - 0.5) * 1000
-    )
+    # For self-play, ELO is based on average reward
+    estimated_elo = 1500 + (trainer.avg_reward * 100)
 
     final_model_id = model_manager.save_model(
         model,
@@ -481,10 +479,8 @@ Examples:
 
     # Print final statistics
     print()
-    print("Final Statistics:")
+    print("Final Statistics (Self-Play):")
     print(f"  Total Games:      {trainer.total_games}")
-    print(f"  Total Wins:       {trainer.total_wins}")
-    print(f"  Win Rate:         {trainer.total_wins / max(1, trainer.total_games):.2%}")
     print(f"  Avg Reward:       {trainer.avg_reward:.4f}")
     if trainer.running_reward is not None:
         print(f"  Running Reward:   {trainer.running_reward:.4f}")
