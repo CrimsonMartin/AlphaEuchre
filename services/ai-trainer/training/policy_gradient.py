@@ -28,7 +28,7 @@ from networks.basic_nn import (
 )
 
 
-PASSED_PENALTY = -1.0  # Penalty for passing (increased to force active play)
+PASSED_PENALTY = 0.0  # No penalty for passing out. This makes passing a safe baseline.
 
 
 class Episode:
@@ -297,11 +297,16 @@ class PolicyGradientTrainer:
                             game.start_new_hand()
                 else:  # Call
                     suit_map = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
-                    selected_suit = (
-                        suit_map[decision_idx]
-                        if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2
-                        else game.state.turned_up_card.suit
-                    )
+                    if game.state.phase == GamePhase.TRUMP_SELECTION_ROUND2:
+                        selected_suit = suit_map[decision_idx]
+                    else:
+                        # In Round 1, we must call the turned up suit
+                        selected_suit = (
+                            game.state.turned_up_card.suit
+                            if game.state.turned_up_card
+                            else Suit.CLUBS
+                        )
+
                     game.call_trump(selected_suit)
                     current_hand_info["caller_position"] = current_pos
                     current_hand_info["calling_team"] = (
@@ -379,9 +384,8 @@ class PolicyGradientTrainer:
                     winner_pos = result["trick_winner"]
                     episode.tricks_won[winner_pos] += 1
                     for pos in range(4):
-                        reward = (
-                            0.05 if (pos % 2) == (winner_pos % 2) else -0.02
-                        )  # Reward winning tricks
+                        # Symmetric trick rewards to avoid "participation trophy" bias
+                        reward = 0.05 if (pos % 2) == (winner_pos % 2) else -0.05
                         episode.events[pos].append({"type": "reward", "value": reward})
 
                 if result.get("hand_complete"):
@@ -393,17 +397,19 @@ class PolicyGradientTrainer:
                     for pos in range(4):
                         pos_team = 1 if pos % 2 == 0 else 2
                         if calling_team == pos_team:
-                            # CALLER REWARDS: High reward for success, moderate penalty for failure
+                            # CALLER REWARDS: High reward for success, VERY significant penalty for failure
+                            # We set failure to -2.0 to force the model to be extremely selective.
                             reward = (
                                 (1.5 if points >= 2 else 1.0)
                                 if winning_team == pos_team
-                                else -0.5
+                                else -2.0
                             )
                             if winning_team != pos_team:
                                 episode.euchres[pos] += 1
                         elif calling_team is not None:
-                            # DEFENDER REWARDS: Moderate reward for success, moderate penalty for failure
-                            reward = 0.5 if winning_team == pos_team else -0.5
+                            # DEFENDER REWARDS: High reward for success (Euchre), moderate penalty for failure
+                            # Making defense rewarding encourages passing with good defensive hands.
+                            reward = 1.0 if winning_team == pos_team else -0.5
                         else:
                             reward = PASSED_PENALTY
                         episode.events[pos].append({"type": "reward", "value": reward})
