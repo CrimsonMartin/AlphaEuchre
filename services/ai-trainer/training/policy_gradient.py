@@ -47,6 +47,7 @@ class Episode:
         self.tricks_won = defaultdict(int)  # position -> count
         self.trump_calls = defaultdict(int)  # position -> count
         self.euchres = defaultdict(int)  # position -> count
+        self.total_hands = 0
         self.game_reward = 0.0  # For statistics (team 1 perspective)
 
 
@@ -193,22 +194,15 @@ class PolicyGradientTrainer:
         action = dist.sample()
         log_prob = dist.log_prob(action)
 
-        # Epsilon-greedy: sometimes pick random action, but always use
-        # the network's log_prob for gradient (keeps gradient flow intact)
-        if random.random() < self.exploration_rate:
-            action_idx = random.choice(valid_indices)
-            action_tensor = torch.tensor(action_idx, device=self.device)
-        else:
-            action_tensor = dist.sample()
-            action_idx = action_tensor.item()
+        return action.item(), log_prob
 
-        log_prob = dist.log_prob(action_tensor)
-
-        return action_idx, log_prob, entropy
-
-    def play_game(self) -> Episode:
+    def play_game(self, opponent_type: str = "passive") -> Episode:
         """
-        Play a single game with the model controlling all 4 positions (self-play).
+        Play a single game.
+
+        Args:
+            opponent_type: "self_play" (all 4 positions use model)
+                          "passive" (Team 2 always passes and plays random)
         """
         episode = Episode()
         game = EuchreGame(f"training-{random.randint(1000, 9999)}")
@@ -225,6 +219,7 @@ class PolicyGradientTrainer:
 
         while game.state.phase != GamePhase.GAME_OVER:
             current_pos = game.state.current_player_position
+            is_model_player = (opponent_type == "self_play") or (current_pos in [0, 2])
 
             if game.state.phase in [
                 GamePhase.TRUMP_SELECTION_ROUND1,
@@ -273,22 +268,27 @@ class PolicyGradientTrainer:
                     if current_pos != game.state.dealer_position:
                         valid_indices.append(4)
 
-                decision_idx, log_prob = self.select_action_with_exploration(
-                    trump_state, valid_indices, "trump"
-                )
-                episode.events[current_pos].append(
-                    {
-                        "type": "decision",
-                        "decision_type": "trump",
-                        "state": trump_state,
-                        "action": decision_idx,
-                        "log_prob": log_prob,
-                    }
-                )
+                if is_model_player:
+                    decision_idx, log_prob = self.select_action_with_exploration(
+                        trump_state, valid_indices, "trump"
+                    )
+                    episode.events[current_pos].append(
+                        {
+                            "type": "decision",
+                            "decision_type": "trump",
+                            "state": trump_state,
+                            "action": decision_idx,
+                            "log_prob": log_prob,
+                        }
+                    )
+                else:
+                    # Passive opponent always passes
+                    decision_idx = 4
 
                 if decision_idx == 4:  # Pass
                     result = game.pass_trump()
                     if result == "hand_over":
+                        episode.total_hands += 1
                         for pos in range(4):
                             episode.events[pos].append(
                                 {"type": "reward", "value": PASSED_PENALTY}
@@ -317,67 +317,91 @@ class PolicyGradientTrainer:
             elif game.state.phase == GamePhase.DEALER_DISCARD:
                 dealer_pos = game.state.dealer_position
                 dealer = game.state.get_player(dealer_pos)
-                game_state_dict = game.get_state(perspective_position=dealer_pos)
-                hand_with_pickup = [str(card) for card in dealer.hand]
-                discard_state = encode_discard_state(game_state_dict, hand_with_pickup)
-
-                valid_indices = [
-                    self.all_cards.index(str(c))
-                    for c in dealer.hand
-                    if str(c) in self.all_cards
-                ]
-                if not valid_indices:
-                    valid_indices = [0]
-
-                decision_idx, log_prob = self.select_action_with_exploration(
-                    discard_state, valid_indices, "discard"
-                )
-                episode.events[dealer_pos].append(
-                    {
-                        "type": "decision",
-                        "decision_type": "discard",
-                        "state": discard_state,
-                        "action": decision_idx,
-                        "log_prob": log_prob,
-                    }
+                is_dealer_model = (opponent_type == "self_play") or (
+                    dealer_pos in [0, 2]
                 )
 
-                card_to_discard = next(
-                    (c for c in dealer.hand if str(c) == self.all_cards[decision_idx]),
-                    dealer.hand[0],
-                )
+                if is_dealer_model:
+                    game_state_dict = game.get_state(perspective_position=dealer_pos)
+                    hand_with_pickup = [str(card) for card in dealer.hand]
+                    discard_state = encode_discard_state(
+                        game_state_dict, hand_with_pickup
+                    )
+
+                    valid_indices = [
+                        self.all_cards.index(str(c))
+                        for c in dealer.hand
+                        if str(c) in self.all_cards
+                    ]
+                    if not valid_indices:
+                        valid_indices = [0]
+
+                    decision_idx, log_prob = self.select_action_with_exploration(
+                        discard_state, valid_indices, "discard"
+                    )
+                    episode.events[dealer_pos].append(
+                        {
+                            "type": "decision",
+                            "decision_type": "discard",
+                            "state": discard_state,
+                            "action": decision_idx,
+                            "log_prob": log_prob,
+                        }
+                    )
+                    card_to_discard = next(
+                        (
+                            c
+                            for c in dealer.hand
+                            if str(c) == self.all_cards[decision_idx]
+                        ),
+                        dealer.hand[0],
+                    )
+                else:
+                    # Passive opponent discards randomly
+                    card_to_discard = random.choice(dealer.hand)
+
                 game.dealer_discard(card_to_discard)
 
             elif game.state.phase == GamePhase.PLAYING:
-                game_state_dict = game.get_state(perspective_position=current_pos)
-                state_encoding = encode_game_state(game_state_dict)
                 valid_cards = game.get_valid_moves(current_pos)
-                valid_indices = [
-                    self.all_cards.index(str(c))
-                    for c in valid_cards
-                    if str(c) in self.all_cards
-                ]
 
-                if not valid_indices:
-                    valid_indices = [0]
+                if is_model_player:
+                    game_state_dict = game.get_state(perspective_position=current_pos)
+                    state_encoding = encode_game_state(game_state_dict)
+                    valid_indices = [
+                        self.all_cards.index(str(c))
+                        for c in valid_cards
+                        if str(c) in self.all_cards
+                    ]
 
-                decision_idx, log_prob = self.select_action_with_exploration(
-                    state_encoding, valid_indices, "card"
-                )
-                episode.events[current_pos].append(
-                    {
-                        "type": "decision",
-                        "decision_type": "card",
-                        "state": state_encoding,
-                        "action": decision_idx,
-                        "log_prob": log_prob,
-                    }
-                )
+                    if not valid_indices:
+                        valid_indices = [0]
 
-                selected_card = next(
-                    (c for c in valid_cards if str(c) == self.all_cards[decision_idx]),
-                    valid_cards[0],
-                )
+                    decision_idx, log_prob = self.select_action_with_exploration(
+                        state_encoding, valid_indices, "card"
+                    )
+                    episode.events[current_pos].append(
+                        {
+                            "type": "decision",
+                            "decision_type": "card",
+                            "state": state_encoding,
+                            "action": decision_idx,
+                            "log_prob": log_prob,
+                        }
+                    )
+
+                    selected_card = next(
+                        (
+                            c
+                            for c in valid_cards
+                            if str(c) == self.all_cards[decision_idx]
+                        ),
+                        valid_cards[0],
+                    )
+                else:
+                    # Passive opponent plays randomly
+                    selected_card = random.choice(valid_cards)
+
                 result = game.play_card(selected_card)
 
                 if result.get("trick_complete"):
@@ -389,6 +413,7 @@ class PolicyGradientTrainer:
                         episode.events[pos].append({"type": "reward", "value": reward})
 
                 if result.get("hand_complete"):
+                    episode.total_hands += 1
                     hand_winner = result["hand_winner"]
                     winning_team = hand_winner["winning_team"]
                     points = hand_winner["points_awarded"]
@@ -444,8 +469,23 @@ class PolicyGradientTrainer:
         all_returns = {"card": [], "trump": [], "discard": []}
         total_reward = 0.0
 
+        # Statistics for Team 1 (Model)
+        total_wins = 0
+        total_calls = 0
+        total_euchres = 0
+        total_hands = 0
+
         for episode in episodes:
             total_reward += episode.game_reward
+            total_hands += episode.total_hands
+
+            # Team 1 stats
+            if episode.team1_score > episode.team2_score:
+                total_wins += 1
+
+            total_calls += episode.trump_calls[0] + episode.trump_calls[2]
+            total_euchres += episode.euchres[0] + episode.euchres[2]
+
             for pos in range(4):
                 events = episode.events[pos]
                 # Calculate returns backwards
@@ -509,11 +549,17 @@ class PolicyGradientTrainer:
         self.total_games += len(episodes)
         self.avg_reward = total_reward / len(episodes)
 
+        # Calculate final stats
+        win_rate = total_wins / len(episodes)
+        call_rate = total_calls / max(1, total_hands)
+        call_success_rate = (total_calls - total_euchres) / max(1, total_calls)
+
         return {
             "loss": total_loss.item(),
             "avg_reward": self.avg_reward,
             "avg_score_diff": self.avg_reward,
             "running_reward": self.running_reward,
-            "entropy": total_entropy.item(),
-            "critic_loss": critic_loss.item() if self.critic is not None else 0.0,
+            "win_rate": win_rate,
+            "call_rate": call_rate,
+            "call_success_rate": call_success_rate,
         }

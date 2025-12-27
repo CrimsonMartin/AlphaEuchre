@@ -365,11 +365,10 @@ Examples:
             print(f"\n  Update {update} Results:")
             print(f"    Loss:            {stats['loss']:.4f}")
             print(f"    Avg Reward:      {stats['avg_reward']:.4f}")
-            print(f"    Avg Score Diff:  {stats['avg_score_diff']:.4f}")
             print(f"    Running Reward:  {stats['running_reward']:.4f}")
-            print(f"    Entropy:         {stats.get('entropy', 0.0):.4f}")
-            print(f"    Trump Call Rate: {trump_call_rate:.1%} ({total_hands_called}/{total_trump_opportunities})")
-            print(f"    Euchre Rate:     {euchre_rate:.1%} ({total_euchres}/{total_hands_called} calls)")
+            print(f"    Win Rate:        {stats['win_rate']*100:.1f}%")
+            print(f"    Call Rate:       {stats['call_rate']*100:.1f}%")
+            print(f"    Call Success:    {stats['call_success_rate']*100:.1f}%")
             print(f"    Total Games:     {trainer.total_games}")
             print()
 
@@ -398,7 +397,7 @@ Examples:
                         update,
                         stats["running_reward"],
                         stats["avg_reward"],
-                        f"Update {update}: Reward = {stats['avg_reward']:.4f}, Score Diff = {stats['avg_score_diff']:.4f}",
+                        f"Update {update}: WinRate={stats['win_rate']*100:.1f}%, CallRate={stats['call_rate']*100:.1f}%, Success={stats['call_success_rate']*100:.1f}%",
                     ),
                 )
 
