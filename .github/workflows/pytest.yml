@@ -36,7 +36,11 @@ jobs:
         pip install -r requirements-test.txt
         pip install -e shared/euchre_core
     
-    - name: Run pytest with coverage
+    - name: Run root tests
+      run: pytest
+
+    - name: Run euchre-api tests
+      working-directory: services/euchre-api
       run: pytest
     
     - name: Upload coverage reports
