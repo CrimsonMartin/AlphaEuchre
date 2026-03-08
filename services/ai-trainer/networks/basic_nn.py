@@ -108,28 +108,29 @@ class BasicEuchreNN(nn.Module):
         nn.init.normal_(final_layer.weight, mean=0.0, std=0.5)
         nn.init.zeros_(final_layer.bias)
 
-    def forward(self, x):
+    def forward(self, x, return_logits=False):
         """Forward pass through the card playing network with temperature scaling"""
         x = self.card_network(x)
-        # Apply temperature scaling before softmax
-        # Temperature > 1 makes distribution more uniform (exploration)
-        # Temperature < 1 makes distribution more peaked (exploitation)
+        if return_logits:
+            return x / self.temperature
         x = x / self.temperature
         probs = self.softmax(x)
         return probs
 
-    def forward_trump(self, x):
+    def forward_trump(self, x, return_logits=False):
         """Forward pass through the trump selection network with temperature scaling"""
         x = self.trump_network(x)
-        # Apply temperature scaling before softmax
+        if return_logits:
+            return x / self.temperature
         x = x / self.temperature
         probs = self.softmax(x)
         return probs
 
-    def forward_discard(self, x):
+    def forward_discard(self, x, return_logits=False):
         """Forward pass through the discard selection network with temperature scaling"""
         x = self.discard_network(x)
-        # Apply temperature scaling before softmax
+        if return_logits:
+            return x / self.temperature
         x = x / self.temperature
         probs = self.softmax(x)
         return probs
