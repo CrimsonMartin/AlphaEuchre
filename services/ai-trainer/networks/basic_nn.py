@@ -28,7 +28,7 @@ class BasicEuchreNN(nn.Module):
         trump_output_size=5,  # 4 suits + pass
         discard_output_size=24,
         use_cuda=True,
-        temperature=2.0,  # Temperature for softmax (higher = more differentiation)
+        temperature=1.0,  # Temperature for softmax scaling (1.0 = neutral, <1 sharpens, >1 softens)
     ):
         super(BasicEuchreNN, self).__init__()
 

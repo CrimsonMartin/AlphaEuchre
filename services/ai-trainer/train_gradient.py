@@ -72,8 +72,8 @@ Examples:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=50,
-        help="Number of games per gradient update (default: 50)",
+        default=200,
+        help="Number of games per gradient update (default: 200)",
     )
 
     parser.add_argument(
@@ -328,7 +328,8 @@ Examples:
             for game_num in range(args.batch_size):
                 if shutdown_requested:
                     break
-                episode = trainer.play_game()
+                opponent = "self_play" if args.self_play else "passive"
+                episode = trainer.play_game(opponent_type=opponent)
                 episodes.append(episode)
 
                 # Progress indicator
@@ -337,25 +338,6 @@ Examples:
 
             if shutdown_requested:
                 break
-
-            # Compute episode diagnostics before training
-            total_trump_opportunities = 0
-            total_trump_calls = 0
-            total_euchres = 0
-            total_hands_called = 0
-            for ep in episodes:
-                total_trump_calls += sum(ep.trump_calls.values())
-                total_euchres += sum(ep.euchres.values())
-                # Each trump decision is an opportunity; calls are non-pass
-                for _, action_idx, _, _, _ in ep.trump_decisions:
-                    total_trump_opportunities += 1
-                    if action_idx != 4:  # Not pass
-                        total_hands_called += 1
-
-            trump_call_rate = (
-                total_hands_called / max(1, total_trump_opportunities)
-            )
-            euchre_rate = total_euchres / max(1, total_hands_called)
 
             # Train on batch
             print(f"  Training on batch...")
@@ -369,6 +351,7 @@ Examples:
             print(f"    Win Rate:        {stats['win_rate']*100:.1f}%")
             print(f"    Call Rate:       {stats['call_rate']*100:.1f}%")
             print(f"    Call Success:    {stats['call_success_rate']*100:.1f}%")
+            print(f"    Entropy:         {stats.get('entropy', 0):.4f}")
             print(f"    Total Games:     {trainer.total_games}")
             print()
 

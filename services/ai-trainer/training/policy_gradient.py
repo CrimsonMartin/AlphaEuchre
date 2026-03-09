@@ -112,59 +112,17 @@ class PolicyGradientTrainer:
         self.avg_reward = 0.0
         self.running_reward = None
 
-    def select_action_with_exploration(
-        self, state_encoding: np.ndarray, valid_indices: List[int], decision_type: str
-    ) -> Tuple[int, torch.Tensor]:
-        """
-        Select action using model's policy with epsilon-greedy exploration.
-        """
-        # Epsilon-greedy exploration
-        if random.random() < self.exploration_rate:
-            action_idx = random.choice(valid_indices)
-            state_tensor = (
-                torch.FloatTensor(state_encoding).unsqueeze(0).to(self.device)
-            )
-            if decision_type == "card":
-                logits = opponent.forward(state_tensor, return_logits=True)
-            elif decision_type == "trump":
-                logits = opponent.forward_trump(state_tensor, return_logits=True)
-            else:
-                logits = opponent.forward_discard(state_tensor, return_logits=True)
+    def update_opponent(self):
+        """Deep copy current model weights into opponent model and add to pool."""
+        self.opponent_model = copy.deepcopy(self.model)
+        self.opponent_model.eval()
 
-            mask = torch.full_like(logits, float("-inf"))
-            mask[0, valid_indices] = 0
-            masked_logits = logits + mask
-            dist = torch.distributions.Categorical(logits=masked_logits)
-            return dist.sample().item()
-
-                mask = torch.full_like(probs, float("-inf"))
-                mask[0, valid_indices] = 0
-                masked_probs = torch.softmax(probs + mask, dim=1)
-                log_prob = torch.log(masked_probs[0, action_idx] + 1e-10)
-
-        trump_count = sum(
-            1 for c in hand_cards
-            if c and len(c) >= 2 and c[-1] == trump_suit_char
-        )
-        has_right_bower = 1.0 if f"J{trump_suit_char}" in hand_cards else 0.0
-        has_left_bower = (
-            1.0
-            if left_bower_suit and f"J{left_bower_suit}" in hand_cards
-            else 0.0
-        )
-        off_aces = sum(
-            1 for c in hand_cards
-            if c and len(c) >= 2 and c[0] == "A" and c[-1] != trump_suit_char
-        )
-
-        # Weighted strength: bowers are critical, trump count matters, off-aces help
-        strength = (
-            trump_count / 5.0 * 2.0
-            + has_right_bower * 3.0
-            + has_left_bower * 2.5
-            + off_aces / 3.0 * 1.5
-        ) / 10.0
-        return min(strength, 1.0)
+        # Add snapshot to opponent pool, keep max 10
+        snapshot = copy.deepcopy(self.model)
+        snapshot.eval()
+        self.opponent_pool.append(snapshot)
+        if len(self.opponent_pool) > 10:
+            self.opponent_pool.pop(0)
 
     def select_action_with_exploration(
         self, state_encoding: np.ndarray, valid_indices: List[int], decision_type: str
@@ -186,22 +144,49 @@ class PolicyGradientTrainer:
         else:  # discard
             logits = self.model.forward_discard(state_tensor, return_logits=True)
 
-        mask = torch.full_like(probs, float("-inf"))
+        mask = torch.full_like(logits, float("-inf"))
         mask[0, valid_indices] = 0
-        masked_probs = torch.softmax(probs + mask, dim=1)
+        masked_logits = logits + mask
 
-        dist = torch.distributions.Categorical(masked_probs)
+        dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
 
-        return action.item(), log_prob
+        return action.item(), log_prob, entropy
+
+    def _get_opponent_model(self):
+        """Get the opponent model for self-play inference."""
+        if not self.opponent_pool:
+            return self.opponent_model
+        # Randomly pick from pool for diversity
+        return random.choice(self.opponent_pool)
+
+    def _opponent_select_action(
+        self, opponent_model, state_encoding: np.ndarray, valid_indices: List[int], decision_type: str
+    ) -> int:
+        """Select action using opponent model (no gradient tracking)."""
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state_encoding).unsqueeze(0).to(self.device)
+            if decision_type == "card":
+                logits = opponent_model.forward(state_tensor, return_logits=True)
+            elif decision_type == "trump":
+                logits = opponent_model.forward_trump(state_tensor, return_logits=True)
+            else:
+                logits = opponent_model.forward_discard(state_tensor, return_logits=True)
+
+            mask = torch.full_like(logits, float("-inf"))
+            mask[0, valid_indices] = 0
+            masked_logits = logits + mask
+            dist = torch.distributions.Categorical(logits=masked_logits)
+            return dist.sample().item()
 
     def play_game(self, opponent_type: str = "passive") -> Episode:
         """
         Play a single game.
 
         Args:
-            opponent_type: "self_play" (all 4 positions use model)
+            opponent_type: "self_play" (Team 2 uses frozen opponent model)
                           "passive" (Team 2 always passes and plays random)
         """
         episode = Episode()
@@ -209,6 +194,11 @@ class PolicyGradientTrainer:
 
         for i in range(4):
             game.add_player(f"Player{i}", PlayerType.RANDOM_AI)
+
+        # Get opponent model for self-play
+        opponent_model = None
+        if opponent_type == "self_play" and self.opponent_model is not None:
+            opponent_model = self._get_opponent_model()
 
         current_hand_info = {
             "caller_position": None,
@@ -219,7 +209,8 @@ class PolicyGradientTrainer:
 
         while game.state.phase != GamePhase.GAME_OVER:
             current_pos = game.state.current_player_position
-            is_model_player = (opponent_type == "self_play") or (current_pos in [0, 2])
+            is_model_player = current_pos in [0, 2]
+            is_opponent_selfplay = (opponent_type == "self_play") and (current_pos in [1, 3]) and (opponent_model is not None)
 
             if game.state.phase in [
                 GamePhase.TRUMP_SELECTION_ROUND1,
@@ -269,7 +260,7 @@ class PolicyGradientTrainer:
                         valid_indices.append(4)
 
                 if is_model_player:
-                    decision_idx, log_prob = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
                         trump_state, valid_indices, "trump"
                     )
                     episode.events[current_pos].append(
@@ -279,7 +270,13 @@ class PolicyGradientTrainer:
                             "state": trump_state,
                             "action": decision_idx,
                             "log_prob": log_prob,
+                            "entropy": entropy,
                         }
+                    )
+                elif is_opponent_selfplay:
+                    # Self-play opponent uses frozen model for inference
+                    decision_idx = self._opponent_select_action(
+                        opponent_model, trump_state, valid_indices, "trump"
                     )
                 else:
                     # Passive opponent always passes
@@ -317,9 +314,8 @@ class PolicyGradientTrainer:
             elif game.state.phase == GamePhase.DEALER_DISCARD:
                 dealer_pos = game.state.dealer_position
                 dealer = game.state.get_player(dealer_pos)
-                is_dealer_model = (opponent_type == "self_play") or (
-                    dealer_pos in [0, 2]
-                )
+                is_dealer_model = dealer_pos in [0, 2]
+                is_dealer_opponent_selfplay = (opponent_type == "self_play") and (dealer_pos in [1, 3]) and (opponent_model is not None)
 
                 if is_dealer_model:
                     game_state_dict = game.get_state(perspective_position=dealer_pos)
@@ -336,7 +332,7 @@ class PolicyGradientTrainer:
                     if not valid_indices:
                         valid_indices = [0]
 
-                    decision_idx, log_prob = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
                         discard_state, valid_indices, "discard"
                     )
                     episode.events[dealer_pos].append(
@@ -346,6 +342,7 @@ class PolicyGradientTrainer:
                             "state": discard_state,
                             "action": decision_idx,
                             "log_prob": log_prob,
+                            "entropy": entropy,
                         }
                     )
                     card_to_discard = next(
@@ -354,6 +351,27 @@ class PolicyGradientTrainer:
                             for c in dealer.hand
                             if str(c) == self.all_cards[decision_idx]
                         ),
+                        dealer.hand[0],
+                    )
+                elif is_dealer_opponent_selfplay:
+                    # Self-play opponent uses frozen model for discard
+                    game_state_dict = game.get_state(perspective_position=dealer_pos)
+                    hand_with_pickup = [str(card) for card in dealer.hand]
+                    discard_state = encode_discard_state(
+                        game_state_dict, hand_with_pickup
+                    )
+                    valid_indices = [
+                        self.all_cards.index(str(c))
+                        for c in dealer.hand
+                        if str(c) in self.all_cards
+                    ]
+                    if not valid_indices:
+                        valid_indices = [0]
+                    decision_idx = self._opponent_select_action(
+                        opponent_model, discard_state, valid_indices, "discard"
+                    )
+                    card_to_discard = next(
+                        (c for c in dealer.hand if str(c) == self.all_cards[decision_idx]),
                         dealer.hand[0],
                     )
                 else:
@@ -377,7 +395,7 @@ class PolicyGradientTrainer:
                     if not valid_indices:
                         valid_indices = [0]
 
-                    decision_idx, log_prob = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
                         state_encoding, valid_indices, "card"
                     )
                     episode.events[current_pos].append(
@@ -387,6 +405,7 @@ class PolicyGradientTrainer:
                             "state": state_encoding,
                             "action": decision_idx,
                             "log_prob": log_prob,
+                            "entropy": entropy,
                         }
                     )
 
@@ -396,6 +415,24 @@ class PolicyGradientTrainer:
                             for c in valid_cards
                             if str(c) == self.all_cards[decision_idx]
                         ),
+                        valid_cards[0],
+                    )
+                elif is_opponent_selfplay:
+                    # Self-play opponent uses frozen model
+                    game_state_dict = game.get_state(perspective_position=current_pos)
+                    state_encoding = encode_game_state(game_state_dict)
+                    valid_indices = [
+                        self.all_cards.index(str(c))
+                        for c in valid_cards
+                        if str(c) in self.all_cards
+                    ]
+                    if not valid_indices:
+                        valid_indices = [0]
+                    opp_decision_idx = self._opponent_select_action(
+                        opponent_model, state_encoding, valid_indices, "card"
+                    )
+                    selected_card = next(
+                        (c for c in valid_cards if str(c) == self.all_cards[opp_decision_idx]),
                         valid_cards[0],
                     )
                 else:
@@ -438,6 +475,8 @@ class PolicyGradientTrainer:
                         else:
                             reward = PASSED_PENALTY
                         episode.events[pos].append({"type": "reward", "value": reward})
+                        # Mark hand boundary so returns don't bleed across independent hands
+                        episode.events[pos].append({"type": "hand_boundary"})
 
                     current_hand_info = {"caller_position": None, "calling_team": None}
                     if game.state.phase != GamePhase.GAME_OVER:
@@ -464,9 +503,14 @@ class PolicyGradientTrainer:
     def train_on_batch(self, episodes: List[Episode]) -> Dict[str, float]:
         """
         Train the model on a batch of episodes using REINFORCE with proper credit assignment.
+        Fixes applied:
+        - Returns reset at hand boundaries (hands are independent episodes)
+        - Entropy bonus applied to loss to prevent policy collapse
+        - Critic used for advantage computation when available
         """
         all_log_probs = {"card": [], "trump": [], "discard": []}
         all_returns = {"card": [], "trump": [], "discard": []}
+        all_entropies = {"card": [], "trump": [], "discard": []}
         total_reward = 0.0
 
         # Statistics for Team 1 (Model)
@@ -488,22 +532,27 @@ class PolicyGradientTrainer:
 
             for pos in range(4):
                 events = episode.events[pos]
-                # Calculate returns backwards
+                # Calculate returns backwards, resetting at hand boundaries
+                # Hands are independent episodes — reward from hand N should not
+                # propagate back into decisions from hand N-1.
                 returns = []
                 G = 0
                 for event in reversed(events):
-                    if event["type"] == "reward":
+                    if event["type"] == "hand_boundary":
+                        G = 0  # Reset return at hand boundary
+                    elif event["type"] == "reward":
                         G = event["value"] + self.gamma * G
-                    else:
+                    elif event["type"] == "decision":
                         returns.insert(0, G)
 
-                # Match returns to decisions
+                # Match returns and entropies to decisions
                 decision_idx = 0
                 for event in events:
                     if event["type"] == "decision":
                         dtype = event["decision_type"]
                         all_log_probs[dtype].append(event["log_prob"])
                         all_returns[dtype].append(returns[decision_idx])
+                        all_entropies[dtype].append(event["entropy"])
                         decision_idx += 1
 
         if self.running_reward is None:
@@ -514,6 +563,7 @@ class PolicyGradientTrainer:
             )
 
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+        total_entropy = torch.tensor(0.0, device=self.device)
 
         for dtype in ["card", "trump", "discard"]:
             if all_log_probs[dtype]:
@@ -523,13 +573,28 @@ class PolicyGradientTrainer:
                         for lp in all_log_probs[dtype]
                     ]
                 )
+                entropies = torch.stack(
+                    [
+                        e.squeeze() if e.dim() > 0 else e
+                        for e in all_entropies[dtype]
+                    ]
+                )
                 returns = torch.FloatTensor(all_returns[dtype]).to(self.device)
+
                 # Standardize returns for stability
                 if len(returns) > 1:
                     returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
-                loss = -(log_probs * returns).mean()
-                total_loss = total_loss + loss
+                # Policy gradient loss
+                policy_loss = -(log_probs * returns).mean()
+                # Entropy bonus (negative because we want to maximize entropy)
+                entropy_bonus = entropies.mean()
+                total_entropy = total_entropy + entropy_bonus
+
+                total_loss = total_loss + policy_loss
+
+        # Subtract entropy bonus from loss (maximizing entropy = subtracting from loss)
+        total_loss = total_loss - self.entropy_beta * total_entropy
 
         self.optimizer.zero_grad()
         if self.critic_optimizer is not None:
@@ -545,6 +610,7 @@ class PolicyGradientTrainer:
             self.updates_since_opponent_refresh += 1
             if self.updates_since_opponent_refresh >= self.opponent_update_interval:
                 self.update_opponent()
+                self.updates_since_opponent_refresh = 0
 
         self.total_games += len(episodes)
         self.avg_reward = total_reward / len(episodes)
@@ -562,4 +628,5 @@ class PolicyGradientTrainer:
             "win_rate": win_rate,
             "call_rate": call_rate,
             "call_success_rate": call_success_rate,
+            "entropy": total_entropy.item(),
         }
