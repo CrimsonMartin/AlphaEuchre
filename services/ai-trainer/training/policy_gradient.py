@@ -126,13 +126,14 @@ class PolicyGradientTrainer:
 
     def select_action_with_exploration(
         self, state_encoding: np.ndarray, valid_indices: List[int], decision_type: str
-    ) -> Tuple[int, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[int, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Select action using model's policy with epsilon-greedy exploration.
         Uses logits from the network (not softmax output) to avoid double-softmax.
+        Also queries the critic for V(s) if available.
 
         Returns:
-            (action_index, log_probability, entropy)
+            (action_index, log_probability, entropy, value_estimate_or_None)
         """
         state_tensor = torch.FloatTensor(state_encoding).unsqueeze(0).to(self.device)
 
@@ -153,7 +154,18 @@ class PolicyGradientTrainer:
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
 
-        return action.item(), log_prob, entropy
+        # Get value estimate from critic if available
+        value = None
+        if self.critic is not None:
+            with torch.no_grad():
+                if decision_type == "card":
+                    value = self.critic.forward_card(state_tensor).squeeze()
+                elif decision_type == "trump":
+                    value = self.critic.forward_trump(state_tensor).squeeze()
+                else:
+                    value = self.critic.forward_discard(state_tensor).squeeze()
+
+        return action.item(), log_prob, entropy, value
 
     def _get_opponent_model(self):
         """Get the opponent model for self-play inference."""
@@ -186,8 +198,13 @@ class PolicyGradientTrainer:
         Play a single game.
 
         Args:
-            opponent_type: "self_play" (Team 2 uses frozen opponent model)
-                          "passive" (Team 2 always passes and plays random)
+            opponent_type:
+              "passive"     - Team 2 always passes trump and plays random cards.
+              "self_play"   - Team 2 uses frozen opponent model for everything.
+              "semi_passive"- Team 2 always passes trump (model team is always
+                              the only caller) but uses frozen model for card play.
+                              Best of both worlds: maintains calling incentive while
+                              training card play against competent opponents.
         """
         episode = Episode()
         game = EuchreGame(f"training-{random.randint(1000, 9999)}")
@@ -195,9 +212,9 @@ class PolicyGradientTrainer:
         for i in range(4):
             game.add_player(f"Player{i}", PlayerType.RANDOM_AI)
 
-        # Get opponent model for self-play
+        # Get opponent model for self-play / semi-passive
         opponent_model = None
-        if opponent_type == "self_play" and self.opponent_model is not None:
+        if opponent_type in ("self_play", "semi_passive") and self.opponent_model is not None:
             opponent_model = self._get_opponent_model()
 
         current_hand_info = {
@@ -210,7 +227,8 @@ class PolicyGradientTrainer:
         while game.state.phase != GamePhase.GAME_OVER:
             current_pos = game.state.current_player_position
             is_model_player = current_pos in [0, 2]
-            is_opponent_selfplay = (opponent_type == "self_play") and (current_pos in [1, 3]) and (opponent_model is not None)
+            is_opponent_card_selfplay = (opponent_type in ("self_play", "semi_passive")) and (current_pos in [1, 3]) and (opponent_model is not None)
+            is_opponent_trump_selfplay = (opponent_type == "self_play") and (current_pos in [1, 3]) and (opponent_model is not None)
 
             if game.state.phase in [
                 GamePhase.TRUMP_SELECTION_ROUND1,
@@ -260,7 +278,7 @@ class PolicyGradientTrainer:
                         valid_indices.append(4)
 
                 if is_model_player:
-                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy, value = self.select_action_with_exploration(
                         trump_state, valid_indices, "trump"
                     )
                     episode.events[current_pos].append(
@@ -271,15 +289,16 @@ class PolicyGradientTrainer:
                             "action": decision_idx,
                             "log_prob": log_prob,
                             "entropy": entropy,
+                            "value": value,
                         }
                     )
-                elif is_opponent_selfplay:
-                    # Self-play opponent uses frozen model for inference
+                elif is_opponent_trump_selfplay:
+                    # Full self-play: frozen model decides trump
                     decision_idx = self._opponent_select_action(
                         opponent_model, trump_state, valid_indices, "trump"
                     )
                 else:
-                    # Passive opponent always passes
+                    # Passive / semi-passive: opponent always passes trump
                     decision_idx = 4
 
                 if decision_idx == 4:  # Pass
@@ -315,7 +334,7 @@ class PolicyGradientTrainer:
                 dealer_pos = game.state.dealer_position
                 dealer = game.state.get_player(dealer_pos)
                 is_dealer_model = dealer_pos in [0, 2]
-                is_dealer_opponent_selfplay = (opponent_type == "self_play") and (dealer_pos in [1, 3]) and (opponent_model is not None)
+                is_dealer_opponent_selfplay = (opponent_type in ("self_play", "semi_passive")) and (dealer_pos in [1, 3]) and (opponent_model is not None)
 
                 if is_dealer_model:
                     game_state_dict = game.get_state(perspective_position=dealer_pos)
@@ -332,7 +351,7 @@ class PolicyGradientTrainer:
                     if not valid_indices:
                         valid_indices = [0]
 
-                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy, value = self.select_action_with_exploration(
                         discard_state, valid_indices, "discard"
                     )
                     episode.events[dealer_pos].append(
@@ -343,6 +362,7 @@ class PolicyGradientTrainer:
                             "action": decision_idx,
                             "log_prob": log_prob,
                             "entropy": entropy,
+                            "value": value,
                         }
                     )
                     card_to_discard = next(
@@ -395,7 +415,7 @@ class PolicyGradientTrainer:
                     if not valid_indices:
                         valid_indices = [0]
 
-                    decision_idx, log_prob, entropy = self.select_action_with_exploration(
+                    decision_idx, log_prob, entropy, value = self.select_action_with_exploration(
                         state_encoding, valid_indices, "card"
                     )
                     episode.events[current_pos].append(
@@ -406,6 +426,7 @@ class PolicyGradientTrainer:
                             "action": decision_idx,
                             "log_prob": log_prob,
                             "entropy": entropy,
+                            "value": value,
                         }
                     )
 
@@ -417,8 +438,8 @@ class PolicyGradientTrainer:
                         ),
                         valid_cards[0],
                     )
-                elif is_opponent_selfplay:
-                    # Self-play opponent uses frozen model
+                elif is_opponent_card_selfplay:
+                    # Self-play / semi-passive: frozen model plays cards
                     game_state_dict = game.get_state(perspective_position=current_pos)
                     state_encoding = encode_game_state(game_state_dict)
                     valid_indices = [
@@ -459,14 +480,14 @@ class PolicyGradientTrainer:
                     for pos in range(4):
                         pos_team = 1 if pos % 2 == 0 else 2
                         if calling_team == pos_team:
-                            # CALLER REWARDS: High reward for success, VERY significant penalty for failure
-                            # We set failure to -2.0 to force the model to be extremely selective.
-                            reward = (
-                                (1.5 if points >= 2 else 1.0)
-                                if winning_team == pos_team
-                                else -2.0
-                            )
-                            if winning_team != pos_team:
+                            # CALLER REWARDS: Reward march generously, reduce euchre penalty.
+                            # Old: success=+1.5, euchre=-2.0 → break-even at 57% win rate (too high).
+                            # New: march=+2.0, win=+1.0, euchre=-1.2 → break-even at 45% win rate.
+                            if winning_team == pos_team:
+                                reward = 2.0 if points >= 2 else 1.0
+                            else:
+                                reward = -1.2
+                            if winning_team != pos_team and pos == current_hand_info["caller_position"]:
                                 episode.euchres[pos] += 1
                         elif calling_team is not None:
                             # DEFENDER REWARDS: High reward for success (Euchre), moderate penalty for failure
@@ -511,6 +532,7 @@ class PolicyGradientTrainer:
         all_log_probs = {"card": [], "trump": [], "discard": []}
         all_returns = {"card": [], "trump": [], "discard": []}
         all_entropies = {"card": [], "trump": [], "discard": []}
+        all_values = {"card": [], "trump": [], "discard": []}   # V(s) from critic
         total_reward = 0.0
 
         # Statistics for Team 1 (Model)
@@ -545,7 +567,7 @@ class PolicyGradientTrainer:
                     elif event["type"] == "decision":
                         returns.insert(0, G)
 
-                # Match returns and entropies to decisions
+                # Match returns, entropies, and values to decisions
                 decision_idx = 0
                 for event in events:
                     if event["type"] == "decision":
@@ -553,6 +575,8 @@ class PolicyGradientTrainer:
                         all_log_probs[dtype].append(event["log_prob"])
                         all_returns[dtype].append(returns[decision_idx])
                         all_entropies[dtype].append(event["entropy"])
+                        if event.get("value") is not None:
+                            all_values[dtype].append(event["value"])
                         decision_idx += 1
 
         if self.running_reward is None:
@@ -564,37 +588,52 @@ class PolicyGradientTrainer:
 
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
         total_entropy = torch.tensor(0.0, device=self.device)
+        critic_loss = torch.tensor(0.0, device=self.device)
+
+        # Trump head gets ~5x fewer updates than card head, so upweight its entropy
+        # to prevent it from collapsing to "always pass" before it can learn.
+        entropy_weights = {"card": 1.0, "trump": 5.0, "discard": 1.0}
 
         for dtype in ["card", "trump", "discard"]:
-            if all_log_probs[dtype]:
-                log_probs = torch.stack(
-                    [
-                        lp.squeeze() if lp.dim() > 0 else lp
-                        for lp in all_log_probs[dtype]
-                    ]
+            if not all_log_probs[dtype]:
+                continue
+
+            log_probs = torch.stack(
+                [lp.squeeze() if lp.dim() > 0 else lp for lp in all_log_probs[dtype]]
+            )
+            entropies = torch.stack(
+                [e.squeeze() if e.dim() > 0 else e for e in all_entropies[dtype]]
+            )
+            returns = torch.FloatTensor(all_returns[dtype]).to(self.device)
+
+            # Use critic advantage if available, otherwise standardize raw returns
+            if self.critic is not None and len(all_values[dtype]) == len(all_returns[dtype]):
+                values = torch.stack(
+                    [v.squeeze() if v.dim() > 0 else v for v in all_values[dtype]]
+                ).detach()
+                advantages = returns - values
+                # Critic loss: MSE between predicted values and actual returns
+                values_for_loss = torch.stack(
+                    [v.squeeze() if v.dim() > 0 else v for v in all_values[dtype]]
                 )
-                entropies = torch.stack(
-                    [
-                        e.squeeze() if e.dim() > 0 else e
-                        for e in all_entropies[dtype]
-                    ]
-                )
-                returns = torch.FloatTensor(all_returns[dtype]).to(self.device)
+                critic_loss = critic_loss + nn.functional.mse_loss(values_for_loss, returns)
+            else:
+                advantages = returns
 
-                # Standardize returns for stability
-                if len(returns) > 1:
-                    returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            # Standardize advantages for training stability
+            if len(advantages) > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                # Policy gradient loss
-                policy_loss = -(log_probs * returns).mean()
-                # Entropy bonus (negative because we want to maximize entropy)
-                entropy_bonus = entropies.mean()
-                total_entropy = total_entropy + entropy_bonus
+            # Policy gradient loss using advantages
+            policy_loss = -(log_probs * advantages).mean()
+            entropy_bonus = entropies.mean() * entropy_weights[dtype]
+            total_entropy = total_entropy + entropy_bonus
+            total_loss = total_loss + policy_loss
 
-                total_loss = total_loss + policy_loss
-
-        # Subtract entropy bonus from loss (maximizing entropy = subtracting from loss)
+        # Subtract entropy bonus and add critic loss
         total_loss = total_loss - self.entropy_beta * total_entropy
+        if self.critic is not None:
+            total_loss = total_loss + 0.5 * critic_loss
 
         self.optimizer.zero_grad()
         if self.critic_optimizer is not None:

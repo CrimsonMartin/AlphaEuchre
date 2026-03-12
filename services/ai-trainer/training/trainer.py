@@ -1,9 +1,11 @@
-"""Training logic for continuous model training"""
+"""Training logic for continuous model training using Policy Gradient"""
 
 import copy
 from datetime import datetime
 from model_manager import ModelManager
-from genetic.genetic_algorithm import GeneticAlgorithm
+from networks.basic_nn import BasicEuchreNN
+from networks.architecture_registry import ArchitectureRegistry
+from training.policy_gradient import PolicyGradientTrainer
 
 
 def run_continuous_training(
@@ -19,7 +21,12 @@ def run_continuous_training(
     cancellation_flags: dict,
     get_db_connection,
 ):
-    """Run continuous training until cancelled"""
+    """Run continuous policy gradient training until cancelled.
+
+    Args:
+        population_size: Ignored (kept for API compatibility). Single model training.
+        games_per_pairing: Used as batch_size (games per gradient update).
+    """
     try:
         with training_lock:
             training_runs[run_id]["status"] = "running"
@@ -32,18 +39,18 @@ def run_continuous_training(
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO training_runs (id, name, generation_count, population_size, 
+                INSERT INTO training_runs (id, name, generation_count, population_size,
                                          mutation_rate, crossover_rate, elite_size, status)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
                 (
                     run_id,
-                    f"Continuous Training {run_id[:8]}",
+                    f"Policy Gradient {run_id[:8]}",
                     0,
-                    population_size,
-                    0.1,
-                    0.7,
-                    3,
+                    1,  # Single model
+                    0.0,  # N/A for policy gradient
+                    0.0,  # N/A for policy gradient
+                    1,  # Single model
                     "running",
                 ),
             )
@@ -56,150 +63,114 @@ def run_continuous_training(
         # Initialize model manager
         model_manager = ModelManager(database_url)
 
-        # Always seed from best models (25%)
-        print("Seeding population from best previous models (25%)")
-        seed_models = model_manager.seed_population_from_best(
-            population_size, seed_percentage=0.25
-        )
+        # Try to load best existing model, otherwise create new
+        model = None
+        best_existing = model_manager.get_current_best_model()
+        if best_existing is not None:
+            _, model, existing_elo = best_existing
+            print(f"Loaded best existing model (ELO: {existing_elo:.0f})")
+        else:
+            model = ArchitectureRegistry.create_model("basic", use_cuda=use_cuda)
+            print("Created new model")
 
-        # Initialize genetic algorithm with enhanced parameters and parallel processing
-        # Multi-architecture support with simulated annealing enabled by default
-        ga = GeneticAlgorithm(
-            population_size=population_size,
-            mutation_rate=0.15,
-            crossover_rate=0.7,
-            elite_size=4,
-            games_per_pairing=games_per_pairing,
-            num_workers=num_workers,
-            parallel_mode=parallel_mode,
+        # Training hyperparameters
+        batch_size = max(games_per_pairing, 200)  # Use games_per_pairing but minimum 200
+        learning_rate = 0.0001
+        gamma = 0.99
+        entropy_beta = 0.01
+        exploration_rate = 0.1
+
+        # Use semi-passive from the start:
+        # - Opponents always pass trump (model team is always the caller)
+        # - Opponents use frozen model for card play (trains against real defense)
+        # This prevents both "never call" (Nash equilibrium) and "always call"
+        # (trivially optimal against pure passive random opponents).
+        from networks.critic_nn import EuchreCritic
+        critic = EuchreCritic(use_cuda=use_cuda)
+
+        trainer = PolicyGradientTrainer(
+            model=model,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            entropy_beta=entropy_beta,
+            exploration_rate=exploration_rate,
             use_cuda=use_cuda,
+            self_play=True,  # enables opponent pool management for semi-passive
+            opponent_update_interval=20,
+            critic=critic,
+            critic_lr=0.001,
         )
 
-        print(f"Multi-architecture training enabled: {ga.architecture_enabled}")
-        print(f"Simulated annealing temperature: {ga.temperature}")
+        print(f"\nPolicy Gradient Training Configuration:")
+        print(f"  Batch Size:      {batch_size} games")
+        print(f"  Learning Rate:   {learning_rate}")
+        print(f"  Gamma:           {gamma}")
+        print(f"  Entropy Beta:    {entropy_beta}")
+        print(f"  Mode:            Semi-passive (opponents pass trump, use model for cards)")
+        print(f"  Critic:          Enabled (Actor-Critic advantage computation)")
+        print(f"  CUDA:            {use_cuda}")
 
-        # Initialize population
-        ga.initialize_population(seed_models)
+        best_avg_reward = float("-inf")
+        update = 0
 
         # Continuous training loop
-        generation = 0
         while not cancellation_flags.get(run_id, False):
-            generation += 1
+            update += 1
+
+            opponent_type = "semi_passive"
+            phase_label = "Semi-Passive"
+
             print(f"\n{'='*60}")
-            print(f"Generation {generation} (Continuous Mode)")
+            print(f"Update {update} (Policy Gradient - {phase_label})")
             print(f"{'='*60}")
 
-            # Check if another instance found a better model (multi-instance training)
-            db_best = model_manager.get_current_best_model()
-            if db_best is not None:
-                db_model_id, db_model, db_elo = db_best
-                if db_elo > ga.global_best_elo:
-                    print(
-                        f"🔄 Another instance found better model! ELO: {ga.global_best_elo:.0f} → {db_elo:.0f}"
-                    )
-                    ga.global_best_model = copy.deepcopy(db_model)
-                    ga.global_best_elo = db_elo
-                    ga.generations_without_improvement = 0  # Reset stagnation counter
+            # Collect batch of episodes
+            print(f"  Playing {batch_size} games...")
+            episodes = []
+            for game_num in range(batch_size):
+                if cancellation_flags.get(run_id, False):
+                    break
+                episode = trainer.play_game(opponent_type=opponent_type)
+                episodes.append(episode)
 
-                    # Replace worst model in population with the new champion
-                    if len(ga.population) > 0:
-                        ga.population[-1] = copy.deepcopy(db_model)
-                        print(f"  ✓ Updated population with new global champion")
+                if (game_num + 1) % 50 == 0:
+                    print(f"    {game_num + 1}/{batch_size} games complete")
 
-            # Evaluate population
-            ga.elo_ratings = ga.evaluate_population_parallel()
+            if cancellation_flags.get(run_id, False):
+                break
 
-            # Print individual model ELO ratings
-            for i, elo in enumerate(ga.elo_ratings):
-                desc = ga.elo_system.get_rating_description(elo)
-                print(f"  Model {i+1}/{len(ga.population)}: ELO = {elo:.0f} ({desc})")
+            # Train on batch
+            print(f"  Training on batch...")
+            stats = trainer.train_on_batch(episodes)
 
-            # Sort by ELO rating
-            sorted_pop = sorted(
-                zip(ga.population, ga.elo_ratings),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-
-            current_best_model, current_best_elo = sorted_pop[0]
-            avg_elo = sum(ga.elo_ratings) / len(ga.elo_ratings)
-
-            # Track improvement for logging
-            improved = current_best_elo > ga.global_best_elo
-
-            # Update global champion if current best is better
-            if improved:
-                ga.global_best_model = copy.deepcopy(current_best_model)
-                ga.global_best_elo = current_best_elo
-                print(f"\n🏆 NEW GLOBAL CHAMPION! ELO: {current_best_elo:.0f}")
-
-                # Log architecture of champion
-                from networks.architecture_registry import ArchitectureRegistry
-
-                arch_type = ArchitectureRegistry.get_architecture_type(
-                    current_best_model
-                )
-                arch_info = ArchitectureRegistry.get_architecture_info(arch_type)
-                print(
-                    f"   Architecture: {arch_info['name']} ({arch_info['description']})"
-                )
-            else:
-                ga.generations_without_improvement += 1
-
-            # Update temperature and log
-            prev_temp = ga.temperature
-            ga.update_temperature(improved)
-            if abs(ga.temperature - prev_temp) > 0.01:
-                temp_change = "↓ cooling" if ga.temperature < prev_temp else "↑ heating"
-                print(
-                    f"  🌡️  Temperature {temp_change}: {prev_temp:.2f} → {ga.temperature:.2f}"
-                )
-
-            # Apply diversity boosts and log when they happen
-            if ga.generations_without_improvement == 5:
-                ga.mutation_rate = min(ga.base_mutation_rate * 1.5, 0.3)
-                ga.apply_diversity_boost(1)
-            elif ga.generations_without_improvement == 10:
-                ga.mutation_rate = min(ga.base_mutation_rate * 2.0, 0.4)
-                ga.apply_diversity_boost(2)
-            elif ga.generations_without_improvement >= 15:
-                ga.mutation_rate = min(ga.base_mutation_rate * 2.5, 0.5)
-                ga.apply_diversity_boost(3)
-                ga.generations_without_improvement = 0
-            elif ga.generations_without_improvement < 5:
-                ga.mutation_rate = ga.base_mutation_rate
-
-            # Update architecture statistics
-            ga.update_architecture_stats()
-
-            print(f"\nGeneration {generation} Summary:")
-            print(f"  Current Best ELO:  {current_best_elo:.0f}")
-            print(f"  Global Best ELO:   {ga.global_best_elo:.0f}")
-            print(f"  Average ELO:       {avg_elo:.0f}")
-            print(f"  Mutation Rate:     {ga.mutation_rate:.3f}")
-            print(f"  Temperature:       {ga.temperature:.2f}")
-            print(f"  Gens w/o Improve:  {ga.generations_without_improvement}")
-
-            # Print architecture distribution
-            ga.print_architecture_stats()
+            # Print statistics
+            print(f"\n  Update {update} Results:")
+            print(f"    Loss:            {stats['loss']:.4f}")
+            print(f"    Avg Reward:      {stats['avg_reward']:.4f}")
+            print(f"    Running Reward:  {stats['running_reward']:.4f}")
+            print(f"    Win Rate:        {stats['win_rate']*100:.1f}%")
+            print(f"    Call Rate:       {stats['call_rate']*100:.1f}%")
+            print(f"    Call Success:    {stats['call_success_rate']*100:.1f}%")
+            print(f"    Entropy:         {stats.get('entropy', 0):.4f}")
+            print(f"    Total Games:     {trainer.total_games}")
 
             # Update training state
             with training_lock:
-                training_runs[run_id]["current_generation"] = generation
-                training_runs[run_id]["best_fitness"] = ga.global_best_elo
-                training_runs[run_id]["avg_fitness"] = avg_elo
+                training_runs[run_id]["current_generation"] = update
+                training_runs[run_id]["best_fitness"] = stats["running_reward"]
+                training_runs[run_id]["avg_fitness"] = stats["avg_reward"]
 
-            # Update database with generation count and fitness values
+            # Update database
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    UPDATE training_runs 
+                    UPDATE training_runs
                     SET generation_count = %s, best_fitness = %s, avg_fitness = %s
                     WHERE id = %s
                 """,
-                    (generation, ga.global_best_elo, avg_elo, run_id),
+                    (update, stats["running_reward"], stats["avg_reward"], run_id),
                 )
 
                 # Insert training log entry
@@ -211,10 +182,13 @@ def run_continuous_training(
                 """,
                     (
                         run_id,
-                        generation,
-                        ga.global_best_elo,
-                        avg_elo,
-                        f"Generation {generation}: Best = {ga.global_best_elo:.0f}, Avg = {avg_elo:.0f}",
+                        update,
+                        stats["running_reward"],
+                        stats["avg_reward"],
+                        f"Update {update}: WinRate={stats['win_rate']*100:.1f}%, "
+                        f"CallRate={stats['call_rate']*100:.1f}%, "
+                        f"Success={stats['call_success_rate']*100:.1f}%, "
+                        f"Entropy={stats.get('entropy', 0):.4f}",
                     ),
                 )
 
@@ -222,71 +196,49 @@ def run_continuous_training(
                 cur.close()
                 conn.close()
             except Exception as e:
-                print(f"Error updating training run: {e}")
+                print(f"  Error updating database: {e}")
 
-            # Auto-save best model every 5 generations (and at generation 1)
-            # Use save_model_with_lock for multi-instance coordination
-            if (
-                generation == 1 or generation % 5 == 0
-            ) and ga.global_best_model is not None:
-                print(f"  💾 Auto-saving best model (generation {generation})...")
-                model_manager.save_model_with_lock(
-                    ga.global_best_model,
-                    f"AutoSave-Gen{generation}",
-                    generation,
-                    ga.global_best_elo,
+            # Save model every 10 updates
+            if update % 10 == 0:
+                estimated_elo = 1500 + (stats["avg_reward"] * 100)
+                is_best = stats["avg_reward"] > best_avg_reward
+
+                print(f"  Saving model (update {update})...")
+                model_id = model_manager.save_model(
+                    model,
+                    f"PolicyGrad-Update{update}",
+                    update,
+                    stats["running_reward"],
                     run_id,
-                    is_best=True,
-                    elo_rating=ga.global_best_elo,
+                    is_best=is_best,
+                    elo_rating=estimated_elo,
                 )
 
-            # Keep elite - ALWAYS include global champion first
-            elites = []
-            if ga.global_best_model is not None:
-                elites.append(copy.deepcopy(ga.global_best_model))
-                print(f"  ✓ Global champion preserved in population")
-
-            # Add remaining elites from current generation
-            for model, elo in sorted_pop[: ga.elite_size]:
-                if len(elites) < ga.elite_size:
-                    elites.append(copy.deepcopy(model))
-
-            # Select parents
-            parents = ga.selection()
-
-            # Create offspring
-            offspring = []
-            for i in range(0, len(parents), 2):
-                if i + 1 < len(parents):
-                    child1 = ga.crossover(parents[i], parents[i + 1])
-                    child2 = ga.crossover(parents[i + 1], parents[i])
-                    ga.mutate(child1)
-                    ga.mutate(child2)
-                    offspring.extend([child1, child2])
-
-            # New population
-            ga.population = elites + offspring[: ga.population_size - ga.elite_size]
+                if is_best and model_id:
+                    best_avg_reward = stats["avg_reward"]
+                    print(f"  NEW BEST MODEL! Avg Reward: {best_avg_reward:.4f}")
+                    with training_lock:
+                        training_runs[run_id]["best_model_id"] = model_id
 
         # Training was cancelled
-        print(f"\n⚠️  Training cancelled at generation {generation}")
+        print(f"\nTraining cancelled at update {update}")
 
-        # Save final best model
-        # Use save_model_with_lock for multi-instance coordination
-        if ga.global_best_model is not None:
-            print(f"  💾 Saving final best model...")
-            model_id = model_manager.save_model_with_lock(
-                ga.global_best_model,
-                f"FinalBest-Gen{generation}",
-                generation,
-                ga.global_best_elo,
-                run_id,
-                is_best=True,
-                elo_rating=ga.global_best_elo,
-            )
+        # Save final model
+        estimated_elo = 1500 + (trainer.avg_reward * 100)
+        print(f"  Saving final model...")
+        model_id = model_manager.save_model(
+            model,
+            f"PolicyGrad-Final-Update{update}",
+            update,
+            trainer.avg_reward,
+            run_id,
+            is_best=True,
+            elo_rating=estimated_elo,
+        )
 
-            if model_id:
-                with training_lock:
-                    training_runs[run_id]["best_model_id"] = model_id
+        if model_id:
+            with training_lock:
+                training_runs[run_id]["best_model_id"] = model_id
 
         # Mark as completed
         with training_lock:
@@ -298,7 +250,7 @@ def run_continuous_training(
             cur = conn.cursor()
             cur.execute(
                 """
-                UPDATE training_runs 
+                UPDATE training_runs
                 SET status = %s, completed_at = %s
                 WHERE id = %s
             """,

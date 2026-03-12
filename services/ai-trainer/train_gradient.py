@@ -144,6 +144,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--selfplay-warmup",
+        type=int,
+        default=50,
+        help="When using --self-play, train against passive opponents for this many updates first (default: 50)",
+    )
+
+    parser.add_argument(
         "--opponent-update-interval",
         type=int,
         default=20,
@@ -289,9 +296,11 @@ Examples:
             print("Warning: critic_nn.py not found, running without critic")
 
     if args.self_play:
-        print(f"Self-Play:          Enabled (opponent update every {args.opponent_update_interval} updates)")
+        print(f"Self-Play:          Enabled (warmup={args.selfplay_warmup}, opponent update every {args.opponent_update_interval} updates)")
 
-    # Initialize trainer
+    # Initialize trainer — start passive even if self-play requested (curriculum learning)
+    # The model needs to learn calling strategy against passive opponents first,
+    # then switch to self-play for card play refinement.
     trainer = PolicyGradientTrainer(
         model=model,
         learning_rate=args.learning_rate,
@@ -299,7 +308,7 @@ Examples:
         entropy_beta=args.entropy_beta,
         exploration_rate=args.exploration_rate,
         use_cuda=use_cuda,
-        self_play=args.self_play,
+        self_play=False,  # Start passive, switch later if --self-play
         opponent_update_interval=args.opponent_update_interval,
         critic=critic,
         critic_lr=args.critic_lr,
@@ -319,7 +328,12 @@ Examples:
             if shutdown_requested:
                 break
 
-            print(f"Update {update}/{args.num_updates}")
+            # Always use semi-passive: opponents pass trump but use frozen model for cards.
+            # This avoids both "always call" (passive) and "never call" (full self-play) traps.
+            opponent = "semi_passive" if args.self_play else "passive"
+            phase = "Semi-Passive" if args.self_play else "Passive"
+
+            print(f"Update {update}/{args.num_updates} ({phase})")
             print("-" * 70)
 
             # Collect batch of episodes
@@ -328,7 +342,6 @@ Examples:
             for game_num in range(args.batch_size):
                 if shutdown_requested:
                     break
-                opponent = "self_play" if args.self_play else "passive"
                 episode = trainer.play_game(opponent_type=opponent)
                 episodes.append(episode)
 
